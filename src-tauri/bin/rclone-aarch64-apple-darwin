@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+
+if [ -n "${RCLONE_BIN:-}" ]; then
+  exec "$RCLONE_BIN" "$@"
+fi
+
+exec rclone "$@"
