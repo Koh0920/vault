@@ -17,21 +17,16 @@ import { WizardView } from "./views/WizardView";
 
 const bridge = createBackupBridge();
 
-function basename(path: string): string {
-  const normalized = path.replace(/\\/g, "/").replace(/\/+$/, "");
-  const parts = normalized.split("/");
-  return parts[parts.length - 1] || normalized;
-}
-
 function AppInner() {
   const state = useAppState();
   const dispatch = useAppDispatch();
   const toast = useToastActions();
   const bootedRef = useRef(false);
 
+  const explorer = useExplorer(bridge, (jobId) => jobPolling.watchJob(jobId));
   const jobPolling = useJobPolling(bridge, {
     onUploadDone: () => {
-      void explorer.loadIndex();
+      void explorer.loadRepositories();
     },
     onPreviewUpdate: (job) => {
       if (job.kind === "preview" && (job.phase === "done" || job.phase === "failed")) {
@@ -40,7 +35,6 @@ function AppInner() {
     },
   });
   const providers = useProviders(bridge);
-  const explorer = useExplorer(bridge, jobPolling.watchJob);
 
   useEffect(() => {
     if (bootedRef.current) return;
@@ -58,7 +52,7 @@ function AppInner() {
 
       await providers.loadStatuses();
       await jobPolling.loadJobs().catch(() => {});
-      await explorer.loadIndex().catch(() => {});
+      await explorer.loadRepositories().catch(() => {});
     }
     void boot();
   }, []);
@@ -83,83 +77,43 @@ function AppInner() {
       return;
     }
     if (!state.wizard.password.trim()) {
-      toast.push("暗号化パスワードを入力してください", "err");
-      return;
-    }
-
-    const duplicateNames = sourcePaths.reduce<Record<string, number>>((accumulator, path) => {
-      const name = basename(path);
-      accumulator[name] = (accumulator[name] ?? 0) + 1;
-      return accumulator;
-    }, {});
-    const collisions = Object.entries(duplicateNames)
-      .filter(([, count]) => count > 1)
-      .map(([name]) => name);
-    if (collisions.length) {
-      toast.push(`同名の項目は同時にアップロードできません: ${collisions.join(", ")}`, "err");
+      toast.push("リポジトリパスワードを入力してください", "err");
       return;
     }
 
     dispatch({ type: "patch-wizard", patch: { submitting: true } });
     try {
-      const suffix = state.runtimeConfig?.defaultCryptRemoteSuffix ?? "-crypt";
-      const crypt = await bridge.createCryptRemote(
-        state.wizard.baseRemote,
-        suffix,
-        state.wizard.remotePath,
+      await bridge.initVaultRepository(
+        state.wizard.provider,
         state.wizard.password,
+        state.wizard.useKeychain,
       );
-      if (!crypt.ok) throw new Error("crypt remote の作成に失敗しました");
-
-      const startedJobs = [];
-      const startErrors: string[] = [];
-      for (const sourcePath of sourcePaths) {
-        try {
-          const upload = await bridge.startUpload(
-            sourcePath,
-            crypt.cryptRemote,
-            state.wizard.remotePath,
-            "copy",
-          );
-          startedJobs.push({
-            jobId: upload.jobId,
-            executeId: upload.executeId,
-            kind: "upload" as const,
-            phase: "running" as const,
-            progress: {
-              bytesDone: 0,
-              bytesTotal: null,
-              speed: null,
-              eta: null,
-              currentFile: sourcePath,
-              transfers: null,
-            },
-            error: null,
-            result: null,
-            startedAt: new Date().toISOString(),
-            finishedAt: null,
-          });
-        } catch (error) {
-          startErrors.push(`${sourcePath}: ${String(error)}`);
-        }
-      }
-
-      if (!startedJobs.length) {
-        throw new Error(startErrors.join("\n"));
-      }
-
+      const upload = await bridge.startVaultBackup(state.wizard.provider, sourcePaths);
       dispatch({
         type: "upsert-jobs",
-        jobs: startedJobs,
+        jobs: [{
+          jobId: upload.jobId,
+          executeId: upload.executeId,
+          kind: "upload",
+          phase: "running",
+          progress: {
+            bytesDone: 0,
+            bytesTotal: null,
+            speed: null,
+            eta: null,
+            currentFile: sourcePaths.length === 1 ? sourcePaths[0] : `${sourcePaths.length} items`,
+            transfers: null,
+          },
+          error: null,
+          result: null,
+          startedAt: new Date().toISOString(),
+          finishedAt: null,
+        }],
       });
-      startedJobs.forEach((job) => {
-        jobPolling.watchJob(job.jobId);
-      });
+      jobPolling.watchJob(upload.jobId);
       dispatch({ type: "set-view", view: "dashboard" });
-      toast.push(`${startedJobs.length} 件のバックアップを開始しました`);
-      if (startErrors.length) {
-        toast.push(`${startErrors.length} 件の開始に失敗しました`, "err");
-      }
+      toast.push("スナップショットバックアップを開始しました");
+      await explorer.loadRepositories().catch(() => {});
     } catch (error) {
       toast.push(String(error), "err");
     } finally {
@@ -237,12 +191,13 @@ function AppInner() {
         {state.view === "explorer" ? (
           <ExplorerView
             explorer={state.explorer}
-            providerUploads={explorer.providerUploads()}
-            selectedUpload={explorer.selectedUpload()}
+            providerRepositories={explorer.providerRepositories()}
+            selectedRepository={explorer.selectedRepository()}
+            selectedSnapshot={explorer.selectedSnapshot()}
             onProviderChange={(provider) => void explorer.setProvider(provider)}
-            onModeChange={(mode) => void explorer.setMode(mode)}
             onRefresh={() => void explorer.refresh()}
-            onSelectUpload={(uploadId) => void explorer.selectUpload(uploadId)}
+            onSelectRepository={(repoId) => void explorer.selectRepository(repoId)}
+            onSelectSnapshot={(snapshotId) => void explorer.selectSnapshot(snapshotId)}
             onBreadcrumb={(path) => void explorer.openDirectory(path)}
             onUp={() => void explorer.goUp()}
             onQueryChange={(query) => void explorer.setQuery(query)}

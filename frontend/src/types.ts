@@ -1,6 +1,5 @@
 export type ViewName = "dashboard" | "remotes" | "history" | "explorer" | "wizard" | "settings";
 export type ProviderId = "drive" | "r2";
-export type ExplorerMode = "encrypted" | "decrypted";
 export type JobKind = "upload" | "download" | "preview";
 export type JobPhase = "queued" | "running" | "done" | "failed" | "canceled";
 
@@ -32,32 +31,48 @@ export interface ConnectProviderResponse {
   configPath: string;
 }
 
-export interface CreateCryptRemoteResponse {
-  ok: boolean;
-  baseRemote: string;
-  cryptRemote: string;
-  configPath: string;
+export interface InitVaultRepositoryResponse {
+  repoId: string;
 }
 
-export interface StartUploadResponse {
+export interface StartVaultBackupResponse {
   jobId: string;
   executeId: string;
 }
 
-export interface UploadIndexEntry {
-  uploadId: string;
-  uploadedAt: string;
+export interface VaultRepositoryInfo {
+  repoId: string;
   provider: ProviderId;
-  viewBaseRemote: string;
-  viewCryptRemote: string;
-  sourcePath: string;
-  remoteRootPath: string;
-  remoteItemPath: string;
-  itemType: "file" | "directory";
+  backendKind: string;
+  repoLocator: string;
   displayName: string;
+  createdAt: string;
+  lastSnapshotAt: string | null;
 }
 
-export interface ExplorerEntry {
+export interface VaultSnapshotSummary {
+  filesNew: number;
+  filesChanged: number;
+  filesUnmodified: number;
+  dirsNew: number;
+  totalFilesProcessed: number;
+  totalBytesProcessed: number;
+  dataAdded: number;
+  dataAddedPacked: number;
+}
+
+export interface VaultSnapshotInfo {
+  snapshotId: string;
+  repoId: string;
+  time: string;
+  hostname: string;
+  label: string;
+  tags: string[];
+  paths: string[];
+  summary: VaultSnapshotSummary | null;
+}
+
+export interface VaultEntry {
   name: string;
   displayName: string;
   path: string;
@@ -78,6 +93,20 @@ export interface PreviewResult {
   size: number;
 }
 
+export interface BackupJobResult {
+  snapshotId: string;
+  filesNew: number;
+  filesChanged: number;
+  filesUnchanged: number;
+  dirsNew: number;
+  totalBytesProcessed: number;
+  totalBytesAdded: number;
+}
+
+export interface DownloadJobResult {
+  savedPath: string;
+}
+
 export interface JobProgress {
   bytesDone: number;
   bytesTotal: number | null;
@@ -94,7 +123,7 @@ export interface JobState {
   phase: JobPhase;
   progress: JobProgress;
   error: string | null;
-  result: PreviewResult | { savedPath: string } | Record<string, never> | null;
+  result: PreviewResult | BackupJobResult | DownloadJobResult | Record<string, never> | null;
   startedAt: string | null;
   finishedAt: string | null;
 }
@@ -108,8 +137,7 @@ export interface ToastItem {
 export interface WizardState {
   step: 1 | 2 | 3;
   sourcePaths: string[];
-  baseRemote: ProviderId;
-  remotePath: string;
+  provider: ProviderId;
   password: string;
   useKeychain: boolean;
   submitting: boolean;
@@ -127,9 +155,10 @@ export interface ExplorerPreviewState {
 
 export interface ExplorerState {
   provider: ProviderId;
-  mode: ExplorerMode;
-  uploads: UploadIndexEntry[];
-  selectedUploadId: string | null;
+  repositories: VaultRepositoryInfo[];
+  selectedRepoId: string | null;
+  snapshots: VaultSnapshotInfo[];
+  selectedSnapshotId: string | null;
   currentPath: string;
   query: string;
   offset: number;
@@ -137,7 +166,7 @@ export interface ExplorerState {
   totalCount: number;
   nextOffset: number | null;
   listedAt: string | null;
-  entries: ExplorerEntry[];
+  entries: VaultEntry[];
   loading: boolean;
   error: string | null;
   entriesLoading: boolean;

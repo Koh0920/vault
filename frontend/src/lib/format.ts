@@ -1,4 +1,4 @@
-import type { ExplorerEntry, JobState, PreviewResult, UploadIndexEntry } from "../types";
+import type { ExplorerState, JobState, PreviewResult, VaultEntry, VaultSnapshotInfo } from "../types";
 
 export function formatBytes(bytes: number | null | undefined): string {
   if (bytes == null || Number.isNaN(Number(bytes))) return "—";
@@ -18,8 +18,10 @@ export function formatTime(value: string | null | undefined): string {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString("ja-JP");
 }
 
-export function explorerTypeLabel(entry: Partial<ExplorerEntry & UploadIndexEntry & PreviewResult> & { isDir?: boolean; itemType?: string }): string {
-  if (entry.isDir || entry.itemType === "directory") return "folder";
+type ExplorerLike = Partial<VaultEntry & PreviewResult> & { isDir?: boolean };
+
+export function explorerTypeLabel(entry: ExplorerLike): string {
+  if (entry.isDir) return "folder";
   const path = (entry.displayName || entry.name || "").toLowerCase();
   if (path.endsWith(".pdf")) return "pdf";
   if (path.endsWith(".md") || path.endsWith(".markdown")) return "markdown";
@@ -29,7 +31,7 @@ export function explorerTypeLabel(entry: Partial<ExplorerEntry & UploadIndexEntr
   return "file";
 }
 
-export function explorerKindLabel(entry: Partial<ExplorerEntry & UploadIndexEntry & PreviewResult> & { isDir?: boolean; itemType?: string }): string {
+export function explorerKindLabel(entry: ExplorerLike): string {
   const type = explorerTypeLabel(entry);
   switch (type) {
     case "folder":
@@ -68,4 +70,12 @@ export function historyJobs(jobsById: Record<string, JobState>, jobOrder: string
   return jobOrder
     .map((jobId) => jobsById[jobId])
     .filter((job): job is JobState => Boolean(job) && job.kind !== "preview");
+}
+
+export function snapshotLabel(snapshot: VaultSnapshotInfo): string {
+  return `${formatTime(snapshot.time)} · ${snapshot.snapshotId.slice(0, 8)}`;
+}
+
+export function selectedExplorerPath(explorer: ExplorerState): string {
+  return explorer.currentPath || "/";
 }

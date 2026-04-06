@@ -31,15 +31,15 @@ export function WizardView({
           {iconByName("back")}
           戻る
         </button>
-        <div className="sec-eye">新しいバックアップ</div>
-        <h1 className="sec-title">バックアップ設定</h1>
+        <div className="sec-eye">New Snapshot</div>
+        <h1 className="sec-title">Vault バックアップ設定</h1>
       </div>
 
       <div className="wiz-steps">
         {[1, 2, 3].map((step) => (
           <div key={step} className={`wiz-si ${wizard.step === step ? "active" : wizard.step > step ? "done" : ""}`}>
             <div className="wiz-num">{step}</div>
-            <div className="wiz-lbl">{step === 1 ? "ソース" : step === 2 ? "送信先" : "暗号化"}</div>
+            <div className="wiz-lbl">{step === 1 ? "ソース" : step === 2 ? "保存先" : "パスワード"}</div>
             {step < 3 ? <div className="wiz-conn" /> : null}
           </div>
         ))}
@@ -48,7 +48,7 @@ export function WizardView({
       {wizard.step === 1 ? (
         <div className="wiz-panel active">
           <div className="wiz-panel-title">バックアップする項目を選択</div>
-          <div className="wiz-panel-desc">複数のフォルダまたはファイルを選択して、一括でアップロードできます。</div>
+          <div className="wiz-panel-desc">複数のフォルダまたはファイルを選択して、1つの snapshot として保存します。</div>
           <div className="f-group">
             <div className="f">
               <label className="f-lbl">選択済み項目</label>
@@ -79,24 +79,25 @@ export function WizardView({
 
       {wizard.step === 2 ? (
         <div className="wiz-panel active">
-          <div className="wiz-panel-title">どこに保存しますか？</div>
-          <div className="wiz-panel-desc">バックアップ先のクラウドストレージと保存フォルダ名を選択します。</div>
+          <div className="wiz-panel-title">保存先の provider</div>
+          <div className="wiz-panel-desc">保存先は各 provider の `.vault` repository に固定です。新規バックアップは snapshot として追加されます。</div>
           <div className="f-group">
             <div className="f">
               <div className="f-lbl">クラウドストレージ</div>
               <div className="remote-opts">
                 {(["drive", "r2"] as ProviderId[]).map((provider) => (
-                  <button key={provider} type="button" className={`remote-opt ${wizard.baseRemote === provider ? "sel" : ""}`} onClick={() => onPatch({ baseRemote: provider })}>
+                  <button
+                    key={provider}
+                    type="button"
+                    className={`remote-opt ${wizard.provider === provider ? "sel" : ""}`}
+                    onClick={() => onPatch({ provider })}
+                  >
                     <div className="remote-opt-icon">{provider === "drive" ? "🔵" : "🟠"}</div>
                     <div className="remote-opt-name">{provider === "drive" ? "Google Drive" : "Cloudflare R2"}</div>
                     <div className="remote-opt-st">{providers[provider].status === "connected" ? "接続済み" : "未接続"}</div>
                   </button>
                 ))}
               </div>
-            </div>
-            <div className="f">
-              <label className="f-lbl">保存先フォルダ名</label>
-              <input className="f-inp" value={wizard.remotePath} onChange={(event) => onPatch({ remotePath: event.target.value })} />
             </div>
           </div>
           <div className="wiz-foot">
@@ -108,17 +109,17 @@ export function WizardView({
 
       {wizard.step === 3 ? (
         <div className="wiz-panel active">
-          <div className="wiz-panel-title">暗号化の設定</div>
-          <div className="wiz-panel-desc">バックアップはこのパスワードで暗号化されます。パスワードを忘れるとファイルは復元できません。</div>
+          <div className="wiz-panel-title">リポジトリパスワード</div>
+          <div className="wiz-panel-desc">`.vault` repository はこのパスワードで保護されます。忘れると snapshot を復元できません。</div>
           <div className="f-group">
             <div className="f">
-              <label className="f-lbl">暗号化パスワード</label>
+              <label className="f-lbl">パスワード</label>
               <input className="f-inp" type="password" value={wizard.password} onChange={(event) => onPatch({ password: event.target.value })} />
             </div>
             <div className="tog-row">
               <div>
                 <div className="tog-title">キーチェーンに保存</div>
-                <div className="tog-desc">macOS Keychain にパスワードを安全に保存します。</div>
+                <div className="tog-desc">macOS Keychain に repository password を安全に保存します。</div>
               </div>
               <label className="tog">
                 <input type="checkbox" checked={wizard.useKeychain} onChange={(event) => onPatch({ useKeychain: event.target.checked })} />
@@ -130,7 +131,7 @@ export function WizardView({
             <button type="button" className="btn btn-ghost" onClick={() => onPatch({ step: 2 })}>戻る</button>
             <button type="button" className={`btn btn-pri btn-lg ${wizard.submitting ? "btn-spin" : ""}`} onClick={onSubmit} disabled={wizard.submitting || !wizard.password.trim()}>
               {iconByName("upload")}
-              バックアップ開始
+              Snapshot 作成
             </button>
           </div>
         </div>

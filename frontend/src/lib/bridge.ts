@@ -1,14 +1,14 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import type {
   ConnectProviderResponse,
-  CreateCryptRemoteResponse,
-  ExplorerEntry,
-  ExplorerMode,
+  InitVaultRepositoryResponse,
   JobState,
   ProviderStatusInfo,
   RuntimeConfig,
-  StartUploadResponse,
-  UploadIndexEntry,
+  StartVaultBackupResponse,
+  VaultEntry,
+  VaultRepositoryInfo,
+  VaultSnapshotInfo,
 } from "../types";
 
 declare global {
@@ -33,29 +33,31 @@ export interface Bridge {
   pickFolders(): Promise<{ paths: string[] }>;
   pickFiles(): Promise<{ paths: string[] }>;
   getProviderStatuses(): Promise<{ providers: ProviderStatusInfo[] }>;
-  listUploadIndex(): Promise<{ uploads: UploadIndexEntry[] }>;
-  listExplorerEntries(
-    uploadId: string,
+  connectProvider(provider: string): Promise<ConnectProviderResponse>;
+  initVaultRepository(provider: string, password: string, useKeychain: boolean): Promise<InitVaultRepositoryResponse>;
+  startVaultBackup(provider: string, sourcePaths: string[]): Promise<StartVaultBackupResponse>;
+  listVaultRepositories(): Promise<{ repositories: VaultRepositoryInfo[] }>;
+  listVaultSnapshots(repoId: string, limit?: number): Promise<{ snapshots: VaultSnapshotInfo[] }>;
+  listVaultEntries(
+    repoId: string,
+    snapshotId: string,
     path: string,
-    mode: ExplorerMode,
     query: string,
     offset: number,
     limit: number,
     refresh: boolean,
   ): Promise<{
-    upload: UploadIndexEntry;
+    repository: VaultRepositoryInfo;
+    snapshot: VaultSnapshotInfo;
     currentPath: string;
     totalCount: number;
     nextOffset: number | null;
-    entries: ExplorerEntry[];
+    entries: VaultEntry[];
     listedAt: string | null;
   }>;
-  startDownloadExplorerItem(uploadId: string, path: string): Promise<{ jobId: string }>;
-  startPreviewExplorerItem(uploadId: string, path: string): Promise<{ jobId: string }>;
+  startVaultRestore(repoId: string, snapshotId: string, path: string): Promise<{ jobId: string }>;
+  startVaultPreview(repoId: string, snapshotId: string, path: string): Promise<{ jobId: string }>;
   listJobs(kind?: string | null, status?: string | null, limit?: number): Promise<{ jobs: JobState[] }>;
-  connectProvider(provider: string): Promise<ConnectProviderResponse>;
-  createCryptRemote(baseRemote: string, suffix: string, remoteRootPath: string, password: string): Promise<CreateCryptRemoteResponse>;
-  startUpload(sourcePath: string, remoteName: string, remotePath: string, mode?: string): Promise<StartUploadResponse>;
   getJobStatus(jobId: string): Promise<JobState>;
 }
 
@@ -80,9 +82,7 @@ export function createBackupBridge(): Bridge {
         multiple: true,
         title: "バックアップするフォルダを選択",
       });
-      return {
-        paths: normalizeDialogPaths(result),
-      };
+      return { paths: normalizeDialogPaths(result) };
     },
 
     async pickFiles() {
@@ -91,69 +91,60 @@ export function createBackupBridge(): Bridge {
         multiple: true,
         title: "バックアップするファイルを選択",
       });
-      return {
-        paths: normalizeDialogPaths(result),
-      };
+      return { paths: normalizeDialogPaths(result) };
     },
 
     getProviderStatuses() {
       return coreInvoke<{ providers: ProviderStatusInfo[] }>("get_provider_statuses", {});
     },
 
-    listUploadIndex() {
-      return coreInvoke<{ uploads: UploadIndexEntry[] }>("list_upload_index", {});
+    connectProvider(provider) {
+      return coreInvoke<ConnectProviderResponse>("connect_provider", { payload: { provider } });
     },
 
-    listExplorerEntries(uploadId, path, mode, query, offset, limit, refresh) {
-      return coreInvoke("list_explorer_entries", {
-        payload: {
-          uploadId,
-          path,
-          mode,
-          query,
-          offset,
-          limit,
-          refresh,
-        },
+    initVaultRepository(provider, password, useKeychain) {
+      return coreInvoke<InitVaultRepositoryResponse>("init_vault_repository", {
+        payload: { provider, password, useKeychain },
       });
     },
 
-    startDownloadExplorerItem(uploadId, path) {
-      return coreInvoke<{ jobId: string }>("start_download_explorer_item", {
-        payload: { uploadId, path },
+    startVaultBackup(provider, sourcePaths) {
+      return coreInvoke<StartVaultBackupResponse>("start_vault_backup", {
+        payload: { provider, sourcePaths },
       });
     },
 
-    startPreviewExplorerItem(uploadId, path) {
-      return coreInvoke<{ jobId: string }>("start_preview_explorer_item", {
-        payload: { uploadId, path },
+    listVaultRepositories() {
+      return coreInvoke<{ repositories: VaultRepositoryInfo[] }>("list_vault_repositories", {});
+    },
+
+    listVaultSnapshots(repoId, limit = 100) {
+      return coreInvoke<{ snapshots: VaultSnapshotInfo[] }>("list_vault_snapshots", {
+        payload: { repoId, limit },
+      });
+    },
+
+    listVaultEntries(repoId, snapshotId, path, query, offset, limit, refresh) {
+      return coreInvoke("list_vault_entries", {
+        payload: { repoId, snapshotId, path, query, offset, limit, refresh },
+      });
+    },
+
+    startVaultRestore(repoId, snapshotId, path) {
+      return coreInvoke<{ jobId: string }>("start_vault_restore", {
+        payload: { repoId, snapshotId, path },
+      });
+    },
+
+    startVaultPreview(repoId, snapshotId, path) {
+      return coreInvoke<{ jobId: string }>("start_vault_preview", {
+        payload: { repoId, snapshotId, path },
       });
     },
 
     listJobs(kind = null, status = null, limit = 50) {
       return coreInvoke<{ jobs: JobState[] }>("list_jobs", {
         payload: { kind, status, limit },
-      });
-    },
-
-    connectProvider(provider) {
-      return coreInvoke<ConnectProviderResponse>("connect_provider", { payload: { provider } });
-    },
-
-    createCryptRemote(baseRemote, suffix, remoteRootPath, password) {
-      return coreInvoke<CreateCryptRemoteResponse>("create_crypt_remote", {
-        payload: {
-          baseRemote,
-          cryptSuffix: suffix,
-          remoteRootPath,
-          password,
-        },
-      });
-    },
-
-    startUpload(sourcePath, remoteName, remotePath, mode = "copy") {
-      return coreInvoke<StartUploadResponse>("start_upload", {
-        payload: { sourcePath, remoteName, remotePath, mode },
       });
     },
 

@@ -1,15 +1,29 @@
-import { explorerKindLabel, explorerTypeLabel, fileGlyphLabel, formatBytes, formatTime } from "../lib/format";
-import type { ExplorerEntry, ExplorerMode, ExplorerState, PreviewResult, ProviderId, UploadIndexEntry } from "../types";
 import { iconByName } from "../components/Icons";
+import {
+  explorerKindLabel,
+  explorerTypeLabel,
+  fileGlyphLabel,
+  formatBytes,
+  formatTime,
+  snapshotLabel,
+} from "../lib/format";
+import type {
+  ExplorerState,
+  ProviderId,
+  VaultEntry,
+  VaultRepositoryInfo,
+  VaultSnapshotInfo,
+} from "../types";
 
 interface ExplorerViewProps {
   explorer: ExplorerState;
-  providerUploads: UploadIndexEntry[];
-  selectedUpload: UploadIndexEntry | null;
+  providerRepositories: VaultRepositoryInfo[];
+  selectedRepository: VaultRepositoryInfo | null;
+  selectedSnapshot: VaultSnapshotInfo | null;
   onProviderChange: (provider: ProviderId) => void;
-  onModeChange: (mode: ExplorerMode) => void;
   onRefresh: () => void;
-  onSelectUpload: (uploadId: string) => void;
+  onSelectRepository: (repoId: string) => void;
+  onSelectSnapshot: (snapshotId: string) => void;
   onBreadcrumb: (path: string) => void;
   onUp: () => void;
   onQueryChange: (query: string) => void;
@@ -21,16 +35,11 @@ interface ExplorerViewProps {
 }
 
 export function ExplorerView(props: ExplorerViewProps) {
-  const { explorer, providerUploads, selectedUpload } = props;
-  const modeLabel = explorer.mode === "encrypted" ? "暗号化名" : "復号名";
-  const uploadBasePath = selectedUpload
-    ? [selectedUpload.remoteRootPath, selectedUpload.remoteItemPath].filter(Boolean).join("/")
-    : "";
-  const pathLabel = selectedUpload
-    ? `${selectedUpload.viewCryptRemote}:${uploadBasePath}${explorer.currentPath ? `/${explorer.currentPath}` : ""}`
-    : "remote:path";
+  const { explorer, providerRepositories, selectedRepository, selectedSnapshot } = props;
+  const pathLabel = selectedRepository
+    ? `${selectedRepository.repoLocator}:${explorer.currentPath || "/"}` : ".vault";
   const segments = explorer.currentPath.split("/").filter(Boolean);
-  const breadcrumbs = [{ label: selectedUpload?.displayName ?? "root", path: "" }].concat(
+  const breadcrumbs = [{ label: selectedSnapshot ? snapshotLabel(selectedSnapshot) : "latest", path: "" }].concat(
     segments.map((segment, index) => ({
       label: segment,
       path: segments.slice(0, index + 1).join("/"),
@@ -40,22 +49,30 @@ export function ExplorerView(props: ExplorerViewProps) {
   return (
     <section className="view active">
       <div className="sec-hd">
-        <div className="sec-eye">Explorer</div>
-        <h1 className="sec-title">アップロード済みファイル</h1>
-        <p className="sec-sub">このアプリが完了記録したアップロード項目を、provider と表示モードで切り替えて確認します。</p>
+        <div className="sec-eye">Vault Explorer</div>
+        <h1 className="sec-title">スナップショット閲覧</h1>
+        <p className="sec-sub">provider ごとの `.vault` repository を開き、latest または過去 snapshot を browse / preview / restore できます。</p>
       </div>
 
       <div className="exp-shell">
         <ExplorerHeader
           pathLabel={pathLabel}
           provider={explorer.provider}
-          mode={explorer.mode}
+          selectedSnapshot={selectedSnapshot}
           onProviderChange={props.onProviderChange}
-          onModeChange={props.onModeChange}
           onRefresh={props.onRefresh}
         />
-        <ExplorerRoots roots={providerUploads} selectedUploadId={explorer.selectedUploadId} onSelectUpload={props.onSelectUpload} />
-        <ExplorerCurrent selectedUpload={selectedUpload} modeLabel={modeLabel} onPreview={props.onPreview} onDownload={props.onDownload} />
+        <ExplorerRepositories
+          repositories={providerRepositories}
+          selectedRepoId={explorer.selectedRepoId}
+          onSelectRepository={props.onSelectRepository}
+        />
+        <ExplorerCurrent
+          selectedRepository={selectedRepository}
+          snapshots={explorer.snapshots}
+          selectedSnapshot={selectedSnapshot}
+          onSelectSnapshot={props.onSelectSnapshot}
+        />
         <div className="exp-workspace">
           <div className="exp-pane exp-pane-list">
             <div className="exp-card">
@@ -71,7 +88,7 @@ export function ExplorerView(props: ExplorerViewProps) {
                   ))}
                 </div>
                 <div className="exp-browser-tools">
-                  <input className="exp-search" value={explorer.query} onChange={(event) => props.onQueryChange(event.target.value)} placeholder="このフォルダ内を検索" />
+                  <input className="exp-search" value={explorer.query} onChange={(event) => props.onQueryChange(event.target.value)} placeholder="現在のフォルダ内を検索" />
                   <button type="button" className="btn btn-ghost btn-sm" onClick={props.onUp} disabled={!explorer.currentPath}>1階層上へ</button>
                 </div>
               </div>
@@ -86,8 +103,9 @@ export function ExplorerView(props: ExplorerViewProps) {
                 <div>操作</div>
               </div>
               <ExplorerList
-                selectedUpload={selectedUpload}
                 explorer={explorer}
+                selectedRepository={selectedRepository}
+                selectedSnapshot={selectedSnapshot}
                 onOpenDirectory={props.onOpenDirectory}
                 onPreview={props.onPreview}
                 onDownload={props.onDownload}
@@ -106,8 +124,9 @@ export function ExplorerView(props: ExplorerViewProps) {
           <div className="exp-pane exp-pane-preview">
             <ExplorerPreview
               preview={explorer.preview}
-              modeLabel={modeLabel}
-              pathLabel={pathLabel}
+              selectedRepository={selectedRepository}
+              selectedSnapshot={selectedSnapshot}
+              currentPath={explorer.currentPath}
               onToggleMeta={props.onTogglePreviewMeta}
               onDownload={props.onDownload}
             />
@@ -121,22 +140,20 @@ export function ExplorerView(props: ExplorerViewProps) {
 function ExplorerHeader({
   pathLabel,
   provider,
-  mode,
+  selectedSnapshot,
   onProviderChange,
-  onModeChange,
   onRefresh,
 }: {
   pathLabel: string;
   provider: ProviderId;
-  mode: ExplorerMode;
+  selectedSnapshot: VaultSnapshotInfo | null;
   onProviderChange: (provider: ProviderId) => void;
-  onModeChange: (mode: ExplorerMode) => void;
   onRefresh: () => void;
 }) {
   return (
     <div className="exp-headbar">
       <div className="exp-pathline">
-        <div className="exp-drive-dot">EXP</div>
+        <div className="exp-drive-dot">VLT</div>
         <div className="exp-pathcopy">
           <div className="exp-pathlabel">Current Path</div>
           <div className="exp-pathvalue" title={pathLabel}>{pathLabel}</div>
@@ -148,10 +165,7 @@ function ExplorerHeader({
             <button type="button" className={`exp-seg-btn ${provider === "drive" ? "active" : ""}`} onClick={() => onProviderChange("drive")}>Google Drive</button>
             <button type="button" className={`exp-seg-btn ${provider === "r2" ? "active" : ""}`} onClick={() => onProviderChange("r2")}>Cloudflare R2</button>
           </div>
-          <div className="exp-seg">
-            <button type="button" className={`exp-seg-btn ${mode === "encrypted" ? "active" : ""}`} onClick={() => onModeChange("encrypted")}>暗号化後</button>
-            <button type="button" className={`exp-seg-btn ${mode === "decrypted" ? "active" : ""}`} onClick={() => onModeChange("decrypted")}>復号後</button>
-          </div>
+          <div className="exp-current-badge">{selectedSnapshot ? snapshotLabel(selectedSnapshot) : "snapshot なし"}</div>
         </div>
         <button type="button" className="btn btn-ghost btn-sm" onClick={onRefresh}>{iconByName("refresh")}再読み込み</button>
       </div>
@@ -159,97 +173,114 @@ function ExplorerHeader({
   );
 }
 
-function ExplorerRoots({
-  roots,
-  selectedUploadId,
-  onSelectUpload,
+function ExplorerRepositories({
+  repositories,
+  selectedRepoId,
+  onSelectRepository,
 }: {
-  roots: UploadIndexEntry[];
-  selectedUploadId: string | null;
-  onSelectUpload: (uploadId: string) => void;
+  repositories: VaultRepositoryInfo[];
+  selectedRepoId: string | null;
+  onSelectRepository: (repoId: string) => void;
 }) {
-  if (!roots.length) {
-    return <div className="exp-roots"><div className="exp-empty">まずバックアップを完了すると、ここに起点フォルダが表示されます。</div></div>;
+  if (!repositories.length) {
+    return <div className="exp-roots"><div className="exp-empty">まだ `.vault` repository がありません。まず snapshot backup を実行してください。</div></div>;
   }
+
   return (
     <div className="exp-roots">
-      {roots.map((entry) => {
-        const type = explorerTypeLabel(entry);
-        return (
-          <button key={entry.uploadId} type="button" className={`exp-root ${entry.uploadId === selectedUploadId ? "active" : ""}`} onClick={() => onSelectUpload(entry.uploadId)}>
-            <span className="exp-root-icon"><span className={`file-glyph sm ${type}`}>{fileGlyphLabel(type)}</span></span>
-            <span className="exp-root-copy">
-              <span className="exp-root-title">{entry.displayName}</span>
-              <span className="exp-root-meta">{explorerKindLabel(entry)} · {formatTime(entry.uploadedAt)}</span>
-            </span>
-          </button>
-        );
-      })}
+      {repositories.map((repository) => (
+        <button
+          key={repository.repoId}
+          type="button"
+          className={`exp-root ${repository.repoId === selectedRepoId ? "active" : ""}`}
+          onClick={() => onSelectRepository(repository.repoId)}
+        >
+          <span className="exp-root-icon"><span className="file-glyph sm folder">▣</span></span>
+          <span className="exp-root-copy">
+            <span className="exp-root-title">{repository.displayName}</span>
+            <span className="exp-root-meta">{repository.backendKind} · {formatTime(repository.lastSnapshotAt ?? repository.createdAt)}</span>
+          </span>
+        </button>
+      ))}
     </div>
   );
 }
 
 function ExplorerCurrent({
-  selectedUpload,
-  modeLabel,
-  onPreview,
-  onDownload,
+  selectedRepository,
+  snapshots,
+  selectedSnapshot,
+  onSelectSnapshot,
 }: {
-  selectedUpload: UploadIndexEntry | null;
-  modeLabel: string;
-  onPreview: (path: string) => void;
-  onDownload: (path: string) => void;
+  selectedRepository: VaultRepositoryInfo | null;
+  snapshots: VaultSnapshotInfo[];
+  selectedSnapshot: VaultSnapshotInfo | null;
+  onSelectSnapshot: (snapshotId: string) => void;
 }) {
-  if (!selectedUpload) {
-    return <div className="exp-current"><div className="exp-current-empty">表示するアップロード起点を選択してください。</div></div>;
+  if (!selectedRepository) {
+    return <div className="exp-current"><div className="exp-current-empty">表示する repository を選択してください。</div></div>;
   }
+
   return (
     <div className="exp-current">
       <div>
-        <div className="exp-current-kicker">Active Root</div>
-        <div className="exp-current-title">{selectedUpload.displayName}</div>
-        <div className="exp-current-meta">{selectedUpload.sourcePath}</div>
-        <div className="exp-current-meta mono">
-          {selectedUpload.viewCryptRemote}:
-          {[selectedUpload.remoteRootPath, selectedUpload.remoteItemPath].filter(Boolean).join("/")}
-        </div>
+        <div className="exp-current-kicker">Active Repository</div>
+        <div className="exp-current-title">{selectedRepository.displayName}</div>
+        <div className="exp-current-meta">{selectedRepository.repoLocator}</div>
+        <div className="exp-current-meta mono">latest snapshot: {formatTime(selectedRepository.lastSnapshotAt)}</div>
       </div>
-      <div className="exp-current-side">
-        <div className="exp-current-badge">{modeLabel}</div>
-        <div className="exp-actions">
-          {selectedUpload.itemType === "file" ? <button type="button" className="btn btn-sec btn-sm" onClick={() => onPreview("")}>プレビュー</button> : null}
-          <button type="button" className="btn btn-ghost btn-sm" onClick={() => onDownload("")}>ダウンロード</button>
-        </div>
+      <div className="exp-current-side" style={{ minWidth: 260 }}>
+        <label className="f-lbl" style={{ marginBottom: 8 }}>Snapshot</label>
+        <select
+          className="f-inp"
+          value={selectedSnapshot?.snapshotId ?? ""}
+          onChange={(event) => onSelectSnapshot(event.target.value)}
+          disabled={!snapshots.length}
+        >
+          {!snapshots.length ? <option value="">snapshot なし</option> : null}
+          {snapshots.map((snapshot) => (
+            <option key={snapshot.snapshotId} value={snapshot.snapshotId}>
+              {snapshotLabel(snapshot)}
+            </option>
+          ))}
+        </select>
       </div>
     </div>
   );
 }
 
 function ExplorerList({
-  selectedUpload,
   explorer,
+  selectedRepository,
+  selectedSnapshot,
   onOpenDirectory,
   onPreview,
   onDownload,
 }: {
-  selectedUpload: UploadIndexEntry | null;
   explorer: ExplorerState;
+  selectedRepository: VaultRepositoryInfo | null;
+  selectedSnapshot: VaultSnapshotInfo | null;
   onOpenDirectory: (path: string) => void;
   onPreview: (path: string) => void;
   onDownload: (path: string) => void;
 }) {
-  if (!selectedUpload) {
-    return <div className="exp-empty">表示するアップロード起点を選択してください。</div>;
+  if (!selectedRepository || !selectedSnapshot) {
+    return <div className="exp-empty">表示する repository と snapshot を選択してください。</div>;
   }
-  if (selectedUpload.itemType === "file" && !explorer.currentPath) {
-    return <div className="exp-empty">このアップロードは単体ファイルです。プレビューまたはダウンロードを実行してください。</div>;
-  }
-  if (explorer.entriesLoading) return <div className="exp-empty">フォルダ内容を読み込み中…</div>;
+  if (explorer.entriesLoading) return <div className="exp-empty">snapshot 内容を読み込み中…</div>;
   if (explorer.entriesError) return <div className="exp-empty">一覧の取得に失敗しました: {explorer.entriesError}</div>;
   if (!explorer.entries.length) return <div className="exp-empty">この条件に一致する項目はありません。</div>;
   return (
     <>
-      {explorer.entries.map((entry) => <ExplorerRow key={entry.path} entry={entry} onOpenDirectory={onOpenDirectory} onPreview={onPreview} onDownload={onDownload} />)}
+      {explorer.entries.map((entry) => (
+        <ExplorerRow
+          key={entry.path}
+          entry={entry}
+          onOpenDirectory={onOpenDirectory}
+          onPreview={onPreview}
+          onDownload={onDownload}
+        />
+      ))}
     </>
   );
 }
@@ -260,7 +291,7 @@ function ExplorerRow({
   onPreview,
   onDownload,
 }: {
-  entry: ExplorerEntry;
+  entry: VaultEntry;
   onOpenDirectory: (path: string) => void;
   onPreview: (path: string) => void;
   onDownload: (path: string) => void;
@@ -284,7 +315,7 @@ function ExplorerRow({
         ) : (
           <button type="button" className="btn btn-sec btn-sm" onClick={() => onPreview(entry.path)}>プレビュー</button>
         )}
-        <button type="button" className="btn btn-ghost btn-sm" onClick={() => onDownload(entry.path)}>ダウンロード</button>
+        <button type="button" className="btn btn-ghost btn-sm" onClick={() => onDownload(entry.path)}>復元</button>
       </div>
     </div>
   );
@@ -292,14 +323,16 @@ function ExplorerRow({
 
 function ExplorerPreview({
   preview,
-  modeLabel,
-  pathLabel,
+  selectedRepository,
+  selectedSnapshot,
+  currentPath,
   onToggleMeta,
   onDownload,
 }: {
   preview: ExplorerState["preview"];
-  modeLabel: string;
-  pathLabel: string;
+  selectedRepository: VaultRepositoryInfo | null;
+  selectedSnapshot: VaultSnapshotInfo | null;
+  currentPath: string;
   onToggleMeta: () => void;
   onDownload: (path: string) => void;
 }) {
@@ -315,6 +348,7 @@ function ExplorerPreview({
 
   const data = preview.data;
   const type = explorerTypeLabel(data);
+  const absolutePath = [selectedRepository?.repoLocator ?? ".vault", currentPath, data.path].filter(Boolean).join("/");
 
   return (
     <div className="exp-preview">
@@ -322,19 +356,25 @@ function ExplorerPreview({
         <div className="exp-preview-top">
           <div className="exp-preview-title-wrap">
             <div className="exp-preview-title">{data.name}</div>
-            <div className="exp-preview-meta">{data.kind === "text" && data.truncated ? "先頭のみ表示しています" : modeLabel}</div>
+            <div className="exp-preview-meta">
+              {data.kind === "text" && data.truncated
+                ? "先頭のみ表示しています"
+                : selectedSnapshot
+                  ? snapshotLabel(selectedSnapshot)
+                  : "preview"}
+            </div>
           </div>
           <div className="exp-actions">
             <button type="button" className="btn btn-ghost btn-sm" onClick={onToggleMeta}>{preview.metaOpen ? "閉じる" : "情報"}</button>
-            <button type="button" className="btn btn-sec btn-sm" onClick={() => onDownload(data.path)}>ダウンロード</button>
+            <button type="button" className="btn btn-sec btn-sm" onClick={() => onDownload(data.path)}>復元</button>
           </div>
         </div>
         {preview.metaOpen ? (
           <div className="exp-preview-grid">
-            <PreviewStat label="場所" value={pathLabel} mono />
+            <PreviewStat label="場所" value={absolutePath} mono />
             <PreviewStat label="種別" value={explorerKindLabel(data)} />
             <PreviewStat label="サイズ" value={formatBytes(data.size)} />
-            <PreviewStat label="表示" value={data.kind === "unsupported" ? "未対応" : modeLabel} />
+            <PreviewStat label="Snapshot" value={selectedSnapshot ? snapshotLabel(selectedSnapshot) : "—"} />
           </div>
         ) : null}
         {data.kind === "image" && data.imageDataUrl ? (
@@ -360,9 +400,9 @@ function ExplorerPreview({
 
 function PreviewStat({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
   return (
-    <div className="exp-preview-stat">
-      <span className="exp-preview-label">{label}</span>
-      <span className={`exp-preview-value ${mono ? "mono" : ""}`}>{value}</span>
+    <div>
+      <div className="exp-stat-label">{label}</div>
+      <div className={`exp-stat-value ${mono ? "mono" : ""}`}>{value}</div>
     </div>
   );
 }

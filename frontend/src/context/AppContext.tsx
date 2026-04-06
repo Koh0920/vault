@@ -8,15 +8,15 @@ import {
 } from "react";
 import type {
   AppState,
-  ExplorerEntry,
-  ExplorerMode,
   JobState,
   PreviewResult,
   ProviderId,
   ProviderState,
   RuntimeConfig,
   ToastItem,
-  UploadIndexEntry,
+  VaultEntry,
+  VaultRepositoryInfo,
+  VaultSnapshotInfo,
   ViewName,
 } from "../types";
 
@@ -32,10 +32,11 @@ type Action =
   | { type: "patch-wizard"; patch: Partial<AppState["wizard"]> }
   | { type: "set-debug-open"; open: boolean }
   | { type: "patch-explorer"; patch: Partial<AppState["explorer"]> }
-  | { type: "set-explorer-uploads"; uploads: UploadIndexEntry[]; selectedUploadId: string | null }
+  | { type: "set-explorer-repositories"; repositories: VaultRepositoryInfo[]; selectedRepoId: string | null }
+  | { type: "set-explorer-snapshots"; snapshots: VaultSnapshotInfo[]; selectedSnapshotId: string | null }
   | {
       type: "set-explorer-entries";
-      entries: ExplorerEntry[];
+      entries: VaultEntry[];
       currentPath: string;
       totalCount: number;
       nextOffset: number | null;
@@ -62,17 +63,17 @@ const initialState: AppState = {
   wizard: {
     step: 1,
     sourcePaths: [],
-    baseRemote: "drive",
-    remotePath: "backup",
+    provider: "drive",
     password: "",
     useKeychain: true,
     submitting: false,
   },
   explorer: {
     provider: "drive",
-    mode: "decrypted",
-    uploads: [],
-    selectedUploadId: null,
+    repositories: [],
+    selectedRepoId: null,
+    snapshots: [],
+    selectedSnapshotId: null,
     currentPath: "",
     query: "",
     offset: 0,
@@ -108,6 +109,18 @@ function sortJobOrder(jobsById: Record<string, JobState>): string[] {
     .map((job) => job.jobId);
 }
 
+function idlePreview(preview: AppState["explorer"]["preview"]) {
+  return {
+    ...preview,
+    status: "idle" as const,
+    jobId: null,
+    path: null,
+    data: null,
+    error: null,
+    metaOpen: false,
+  };
+}
+
 function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
     case "set-view":
@@ -116,18 +129,7 @@ function reducer(state: AppState, action: Action): AppState {
         view: action.view,
         explorer: action.view === "explorer"
           ? state.explorer
-          : {
-              ...state.explorer,
-              preview: {
-                ...state.explorer.preview,
-                status: "idle",
-                jobId: null,
-                path: null,
-                data: null,
-                error: null,
-                metaOpen: false,
-              },
-            },
+          : { ...state.explorer, preview: idlePreview(state.explorer.preview) },
       };
     case "set-bridge-ready":
       return { ...state, bridgeReady: action.ready };
@@ -154,9 +156,7 @@ function reducer(state: AppState, action: Action): AppState {
     case "upsert-jobs": {
       const jobsById = { ...state.jobsById };
       action.jobs.forEach((job) => {
-        const normalized = job.kind === "preview"
-          ? { ...job, result: null }
-          : job;
+        const normalized = job.kind === "preview" ? { ...job, result: null } : job;
         jobsById[job.jobId] = {
           ...jobsById[job.jobId],
           ...normalized,
@@ -178,30 +178,43 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...state, debugOpen: action.open };
     case "patch-explorer":
       return { ...state, explorer: { ...state.explorer, ...action.patch } };
-    case "set-explorer-uploads":
+    case "set-explorer-repositories":
       return {
         ...state,
         explorer: {
           ...state.explorer,
-          uploads: action.uploads,
-          selectedUploadId: action.selectedUploadId,
+          repositories: action.repositories,
+          selectedRepoId: action.selectedRepoId,
+          snapshots: [],
+          selectedSnapshotId: null,
           currentPath: "",
           query: "",
           offset: 0,
           totalCount: 0,
           nextOffset: null,
+          listedAt: null,
           entries: [],
           error: null,
           entriesError: null,
-          preview: {
-            ...state.explorer.preview,
-            status: "idle",
-            jobId: null,
-            path: null,
-            data: null,
-            error: null,
-            metaOpen: false,
-          },
+          preview: idlePreview(state.explorer.preview),
+        },
+      };
+    case "set-explorer-snapshots":
+      return {
+        ...state,
+        explorer: {
+          ...state.explorer,
+          snapshots: action.snapshots,
+          selectedSnapshotId: action.selectedSnapshotId,
+          currentPath: "",
+          query: "",
+          offset: 0,
+          totalCount: 0,
+          nextOffset: null,
+          listedAt: null,
+          entries: [],
+          entriesError: null,
+          preview: idlePreview(state.explorer.preview),
         },
       };
     case "set-explorer-entries":
@@ -292,15 +305,7 @@ function reducer(state: AppState, action: Action): AppState {
         ...state,
         explorer: {
           ...state.explorer,
-          preview: {
-            ...state.explorer.preview,
-            status: "idle",
-            jobId: null,
-            path: null,
-            data: null,
-            error: null,
-            metaOpen: false,
-          },
+          preview: idlePreview(state.explorer.preview),
         },
       };
     default:
@@ -340,17 +345,9 @@ export function useToastActions() {
   return useMemo(
     () => ({
       push(message: string, type: ToastItem["type"] = "ok") {
-        dispatch({
-          type: "push-toast",
-          toast: {
-            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-            type,
-            message,
-          },
-        });
-      },
-      remove(id: string) {
-        dispatch({ type: "remove-toast", id });
+        const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        dispatch({ type: "push-toast", toast: { id, type, message } });
+        window.setTimeout(() => dispatch({ type: "remove-toast", id }), 3200);
       },
     }),
     [dispatch],
