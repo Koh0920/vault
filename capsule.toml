@@ -1,0 +1,33 @@
+schema_version = "0.2"
+name = "byok-encrypted-r2-drop"
+version = "0.1.0"
+description = "Local-first backup capsule powered by Tauri, rclone, crypt, and RC API"
+type = "app"
+default_target = "desktop"
+
+[targets.desktop]
+runtime = "source"
+driver = "tauri"
+run_command = "cargo run --manifest-path src-tauri/Cargo.toml"
+working_dir = "."
+
+[metadata.desky_guest]
+adapter = "tauri"
+frontend_entry = "frontend/index.html"
+transport = "http"
+rpc_path = "/rpc"
+health_path = "/health"
+default_port = 43150
+capabilities = [
+	"ping",
+	"app.invoke",
+	"plugin:dialog|open",
+	"plugin:fs|readFile",
+	"plugin:fs|writeFile",
+	"shell.open",
+]
+
+[metadata]
+display_name = "Encrypted R2 Drop"
+author = "Ato Sample"
+tags = ["backup", "google-drive", "rclone", "crypt", "tauri"]
