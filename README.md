@@ -51,9 +51,10 @@ Browser (React) ── HTTP ──► Axum server (Rust) ── rclone ──►
 
 - **Session isolation** — every session owns its own rclone config
   (`state/rclone/<session-id>/rclone.conf`), so parallel sessions can never
-  overwrite each other's Google OAuth token or crypt password. Disconnect
-  removes only the owning session's config. Jobs carry an owner and are only
-  visible/cancellable by their session.
+  overwrite each other's Google OAuth token or crypt password. All rclone work
+  for a session is serialized by a per-session lock so concurrent requests
+  can't lose a config section. Disconnect removes only the owning session's
+  config.
 - **Path resolution** — plain reads/writes resolve directly to `drive:<path>`;
   encrypted ops resolve into the crypt root `drive-crypt:<path>` (which maps to
   `drive:Vault/cipher`). No implicit prefix is added, so metadata never lands
@@ -151,9 +152,9 @@ All routes are under `/api/v1` and use a same-origin session cookie.
 | GET | `/api/v1/files?path=` | List encrypted files in a folder |
 | POST | `/api/v1/files/preview?path=` | Preview a text file |
 | POST | `/api/v1/uploads` | Multipart upload, encrypted to vault |
-| GET | `/api/v1/jobs` | List upload jobs |
-| GET | `/api/v1/jobs/:id` | Single job status |
-| POST | `/api/v1/jobs/:id/cancel` | Cancel a running job |
+
+Uploads are synchronous within the request (rclone `copyto` completes before
+the response). There is no job/cancel API.
 
 ## Notes
 

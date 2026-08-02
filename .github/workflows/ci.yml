@@ -20,6 +20,19 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: server
+      - name: Install pinned rclone (linux/amd64)
+        run: |
+          set -euo pipefail
+          RCLONE_VERSION=1.73.3
+          curl -fsSL -o /tmp/rclone.zip \
+            "https://downloads.rclone.org/v${RCLONE_VERSION}/rclone-v${RCLONE_VERSION}-linux-amd64.zip"
+          curl -fsSL -o /tmp/rclone.sha256 \
+            "https://downloads.rclone.org/v${RCLONE_VERSION}/SHA256SUMS"
+          expected=$(grep "rclone-v${RCLONE_VERSION}-linux-amd64.zip" /tmp/rclone.sha256 | awk '{print $1}')
+          echo "${expected}  /tmp/rclone.zip" | sha256sum -c -
+          unzip -o /tmp/rclone.zip -d /tmp/rclone-extract
+          sudo cp "/tmp/rclone-extract/rclone-v${RCLONE_VERSION}-linux-amd64/rclone" /usr/local/bin/rclone
+          rclone version
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo test --all-features

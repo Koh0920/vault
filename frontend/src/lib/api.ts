@@ -1,7 +1,6 @@
 import type {
   DriveStatus,
   InitializeResponse,
-  JobStatus,
   ListFilesResponse,
   PreviewResponse,
   RuntimeConfig,
@@ -73,18 +72,6 @@ export const api = {
   preview(path: string): Promise<PreviewResponse> {
     const qs = path ? `?path=${encodeURIComponent(path)}` : "";
     return request(`/files/preview${qs}`, { method: "POST" });
-  },
-
-  listJobs(): Promise<{ ok: boolean; jobs: JobStatus[] }> {
-    return request("/jobs");
-  },
-
-  jobStatus(jobId: string): Promise<JobStatus> {
-    return request(`/jobs/${jobId}`);
-  },
-
-  cancelJob(jobId: string): Promise<{ ok: boolean }> {
-    return request(`/jobs/${jobId}/cancel`, { method: "POST" });
   },
 
   async uploadFiles(files: File[], dir: string): Promise<UploadResult[]> {

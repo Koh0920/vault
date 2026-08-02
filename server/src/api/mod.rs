@@ -1,6 +1,5 @@
 pub mod drive_routes;
 pub mod explorer_routes;
-pub mod job_routes;
 pub mod upload_routes;
 pub mod vault_routes;
 
@@ -94,7 +93,6 @@ pub fn router() -> Router<AppState> {
         .route("/api/v1/runtime", get(runtime))
         .merge(drive_routes::routes())
         .merge(vault_routes::routes())
-        .merge(job_routes::routes())
         .merge(explorer_routes::routes())
         .merge(upload_routes::routes())
 }

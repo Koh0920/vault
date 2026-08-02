@@ -57,25 +57,6 @@ export interface PreviewResponse {
   size: number;
 }
 
-export interface JobProgress {
-  bytesDone: number;
-  bytesTotal?: number | null;
-  speed?: number | null;
-  eta?: number | null;
-  currentFile?: string | null;
-}
-
-export interface JobStatus {
-  jobId: string;
-  kind: string;
-  phase: string;
-  progress: JobProgress;
-  error?: string | null;
-  result?: unknown;
-  startedAt?: string | null;
-  finishedAt?: string | null;
-}
-
 export interface UploadResult {
   name: string;
   ok: boolean;

@@ -159,17 +159,20 @@ impl DriveStore {
     /// Returns metadata (including size) for a single remote path without
     /// downloading it, using `rclone lsjson --stat`. Unlike plain `lsjson`
     /// (which emits an array), `--stat` emits a single JSON object.
+    ///
+    /// Only a clear "not found" (rclone exit 3) yields `Ok(None)`; network,
+    /// auth, config and other failures are propagated as errors so callers
+    /// never mistake a transient failure for "the vault does not exist".
     pub async fn stat(&self, path: &str) -> Result<Option<ObjectEntry>> {
         let path = validate_relative_path(path)?;
         if path.is_empty() {
             return Ok(None);
         }
-        let out = self.rclone.run(&[
+        match self.rclone.run_with_status(&[
             "lsjson".to_string(),
             "--stat".to_string(),
             self.remote(&path),
-        ]);
-        match out {
+        ]) {
             Ok(bytes) => {
                 let item: RcloneLsJsonItem = serde_json::from_slice(&bytes)
                     .map_err(|e| VaultError::Meta(format!("parse lsjson stat: {e}")))?;
@@ -183,7 +186,8 @@ impl DriveStore {
                     encrypted: item.encrypted.clone(),
                 }))
             }
-            Err(_) => Ok(None),
+            Err(e) if e.is_not_found() => Ok(None),
+            Err(e) => Err(e.into()),
         }
     }
 

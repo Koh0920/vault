@@ -201,23 +201,6 @@ tbody tr:hover { background: var(--panel-2); }
 .tiny { background: transparent; border: 1px solid var(--border); color: var(--muted); border-radius: 6px; padding: 2px 8px; cursor: pointer; font-size: 12px; }
 .tiny:hover { color: var(--text); }
 
-.jobs { margin-top: 24px; }
-.jobs h3 { font-family: var(--display); font-size: 16px; }
-.jobs ul { list-style: none; margin: 0; padding: 0; }
-.jobs li {
-  background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 12px 16px; margin-bottom: 8px;
-}
-.job-row { display: flex; align-items: center; gap: 10px; }
-.job-name { font-weight: 600; }
-.badge { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; padding: 2px 8px; border-radius: 20px; }
-.badge.done { background: rgba(126,224,138,0.15); color: var(--ok); }
-.badge.running { background: rgba(108,140,255,0.15); color: var(--accent); }
-.badge.failed { background: rgba(255,107,124,0.15); color: var(--danger, #ff6b6b); }
-.badge.canceled { background: rgba(140,140,160,0.15); color: var(--muted); }
-.job-progress { display: flex; justify-content: space-between; align-items: center; margin-top: 6px; color: var(--muted); font-size: 12px; }
-.mini { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 12px; text-decoration: underline; }
-
 .modal-backdrop {
   position: fixed; inset: 0; background: rgba(0,0,0,0.6);
   display: grid; place-items: center; z-index: 50; padding: 20px;

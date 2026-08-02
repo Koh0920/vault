@@ -8,6 +8,8 @@ pub enum VaultError {
     Crypto(String),
     #[error("rclone: {0}")]
     Rclone(String),
+    #[error("rclone command failed: {0}")]
+    RcloneCommand(#[from] crate::rclone::RcloneError),
     #[error("google drive: {0}")]
     Drive(String),
     #[error("io: {0}")]

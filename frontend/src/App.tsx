@@ -9,7 +9,7 @@ import {
   removeRecoveryKit,
   saveRecoveryKit,
 } from "./lib/recoveryKit";
-import type { JobStatus, ObjectEntry, VaultStatus } from "./types";
+import type { ObjectEntry, VaultStatus } from "./types";
 import "./styles.css";
 
 type Phase = "onboarding" | "locked" | "connected";
@@ -312,7 +312,6 @@ function Connected({
 }) {
   const [entries, setEntries] = useState<ObjectEntry[]>([]);
   const [path, setPath] = useState("");
-  const [jobs, setJobs] = useState<JobStatus[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [preview, setPreview] = useState<{ name: string; content: string } | null>(null);
   const [fileInput, setFileInput] = useState<HTMLInputElement | null>(null);
@@ -320,9 +319,8 @@ function Connected({
   const reload = useCallback(async () => {
     setErr(null);
     try {
-      const [files, j] = await Promise.all([api.listFiles(path), api.listJobs()]);
+      const files = await api.listFiles(path);
       setEntries(files.entries);
-      setJobs(j.jobs);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     }
@@ -331,13 +329,6 @@ function Connected({
   useEffect(() => {
     reload();
   }, [reload]);
-
-  useEffect(() => {
-    const id = setInterval(() => {
-      api.listJobs().then((r) => setJobs(r.jobs)).catch(() => {});
-    }, 2000);
-    return () => clearInterval(id);
-  }, []);
 
   async function openDir(entry: ObjectEntry) {
     if (!entry.isDir) return;
@@ -443,30 +434,6 @@ function Connected({
       </section>
 
       {preview && <PreviewModal preview={preview} onClose={() => setPreview(null)} />}
-
-      <section className="jobs">
-        <h3>Uploads</h3>
-        {jobs.length === 0 && <p className="muted pad">No uploads recorded.</p>}
-        <ul>
-          {jobs.map((job) => (
-            <li key={job.jobId}>
-              <div className="job-row">
-                <span className="job-name">{job.kind}</span>
-                <span className={`badge ${job.phase}`}>{job.phase}</span>
-                {job.error && <span className="muted">{job.error}</span>}
-              </div>
-              {job.phase === "running" && (
-                <div className="job-progress">
-                  <span>{formatBytes(job.progress.bytesDone)} transferred</span>
-                  <button className="mini" onClick={() => api.cancelJob(job.jobId).catch(() => {})}>
-                    cancel
-                  </button>
-                </div>
-              )}
-            </li>
-          ))}
-        </ul>
-      </section>
     </div>
   );
 }
