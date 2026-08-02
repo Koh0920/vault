@@ -3,24 +3,42 @@
 # ---- frontend build stage ----
 FROM node:20-alpine AS frontend-builder
 WORKDIR /app
-COPY frontend/package.json ./
-COPY frontend/package-lock.json ./
-RUN npm ci
-COPY frontend/ ./
-RUN npm run build
+# package.json + lockfile live at the repo root (vite root is frontend/)
+COPY package.json package-lock.json ./
+COPY tsconfig.json vite.config.ts ./
+COPY frontend/ ./frontend/
+RUN npm ci && npm run build
 
 # ---- backend build stage ----
-FROM rust:1.80 AS server-builder
+FROM rust:1.80-bookworm AS server-builder
 WORKDIR /build
 COPY server/ ./server/
-RUN cd server && cargo build --release
+RUN cargo build --manifest-path server/Cargo.toml --release
 
 # ---- runtime image ----
-FROM alpine:3.20
-RUN apk add --no-cache rclone ca-certificates
+FROM debian:bookworm-slim AS runtime
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Pin rclone and verify its SHA-256 against the official checksums file.
+ARG TARGETARCH
+ARG RCLONE_VERSION=1.73.3
+RUN arch="${TARGETARCH:-amd64}" \
+    && if [ "$arch" = "amd64" ]; then a=amd64; elif [ "$arch" = "arm64" ]; then a=arm64; else echo "unsupported arch $arch" && exit 1; fi \
+    && url="https://downloads.rclone.org/v${RCLONE_VERSION}/rclone-v${RCLONE_VERSION}-linux-${a}.zip" \
+    && curl -fsSL -o /tmp/rclone.zip "$url" \
+    && curl -fsSL -o /tmp/rclone.sha256 "https://downloads.rclone.org/v${RCLONE_VERSION}/SHA256SUMS" \
+    && expected=$(grep "rclone-v${RCLONE_VERSION}-linux-${a}.zip" /tmp/rclone.sha256 | awk '{print $1}') \
+    && echo "${expected}  /tmp/rclone.zip" | sha256sum -c - \
+    && unzip -o /tmp/rclone.zip -d /tmp/rclone-extract \
+    && cp "/tmp/rclone-extract/rclone-v${RCLONE_VERSION}-linux-${a}/rclone" /usr/local/bin/rclone \
+    && chmod +x /usr/local/bin/rclone \
+    && rclone version
+
 WORKDIR /app
 COPY --from=server-builder /build/server/target/release/vault-server /usr/local/bin/vault-server
-COPY --from=frontend-builder /app/dist /app/frontend/dist
+COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
 
 ENV VAULT_FRONTEND_DIR=/app/frontend/dist \
     VAULT_STATE_DIR=/data \
