@@ -1,33 +1,27 @@
-schema_version = "0.2"
-name = "byok-encrypted-r2-drop"
+schema_version = "0.3"
+name = "vault"
 version = "0.1.0"
-description = "Local-first backup capsule powered by Tauri, rclone, crypt, and RC API"
+description = "Encrypted backup to Google Drive — standalone web server (Axum + React), rclone crypt"
 type = "app"
-default_target = "desktop"
+default_target = "web"
 
-[targets.desktop]
-runtime = "source"
-driver = "tauri"
-run_command = "cargo run --manifest-path src-tauri/Cargo.toml"
-working_dir = "."
+[targets.web]
+runtime = "oci"
+image = "ghcr.io/koh0920/vault:latest"
+port = 8080
 
-[metadata.desky_guest]
-adapter = "tauri"
-frontend_entry = "frontend/index.html"
-transport = "http"
-rpc_path = "/rpc"
-health_path = "/health"
-default_port = 43150
-capabilities = [
-	"ping",
-	"app.invoke",
-	"plugin:dialog|open",
-	"plugin:fs|readFile",
-	"plugin:fs|writeFile",
-	"shell.open",
-]
+[network]
+expose = ["8080/tcp"]
+ingress = {}
+
+[env]
+VAULT_LISTEN_ADDR = "0.0.0.0:8080"
+VAULT_FRONTEND_DIR = "/app/frontend/dist"
+VAULT_STATE_DIR = "/data"
+VAULT_TEMP_DIR = "/tmp"
 
 [metadata]
-display_name = "Encrypted R2 Drop"
-author = "Ato Sample"
-tags = ["backup", "google-drive", "rclone", "crypt", "tauri"]
+display_name = "Vault"
+author = "Koh0920"
+tags = ["backup", "google-drive", "rclone", "crypt", "encryption", "web"]
+homepage = "https://github.com/Koh0920/vault"
