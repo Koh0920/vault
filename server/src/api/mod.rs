@@ -30,11 +30,10 @@ impl IntoResponse for ApiError {
             VaultError::Forbidden(_) => StatusCode::FORBIDDEN,
             _ => StatusCode::BAD_REQUEST,
         };
-        (
-            status,
-            Json(json!({ "ok": false, "error": self.0.to_string() })),
-        )
-            .into_response()
+        let message = self.0.user_message();
+        // Log the full detail server-side; the client only sees the safe message.
+        tracing::error!(error = %self.0, "request failed");
+        (status, Json(json!({ "ok": false, "error": message }))).into_response()
     }
 }
 

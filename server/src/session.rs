@@ -174,12 +174,18 @@ mod tests {
     use std::time::Duration;
 
     fn cfg() -> AppConfig {
-        // Tests run off loopback; provide a strong secret to satisfy config::load.
+        // Tests run off loopback; provide a strong secret to satisfy config::load
+        // and isolate the state dir so config-file tests don't collide in parallel.
         std::env::set_var(
             "VAULT_COOKIE_SECRET",
             "test-secret-that-is-long-enough-for-hmac-0123456789",
         );
-        crate::config::load()
+        let mut cfg = crate::config::load();
+        cfg.state_dir = std::env::temp_dir().join(format!(
+            "vault-session-test-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        cfg
     }
 
     #[test]

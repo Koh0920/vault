@@ -6,12 +6,15 @@ use std::process::Command;
 pub const DRIVE_REMOTE: &str = "drive";
 pub const DRIVE_CRYPT_REMOTE: &str = "drive-crypt";
 
-/// Structured error from a failed rclone invocation. Holds the command, the
-/// process exit code, and stderr so callers can distinguish "not found" from
-/// genuine failures (network, auth, config, etc.).
+/// Structured error from a failed rclone invocation. Holds a safe, human-chosen
+/// operation label (NEVER raw arguments, which may contain secrets), the process
+/// exit code, and stderr so callers can distinguish "not found" from genuine
+/// failures (network, auth, config, etc.).
 #[derive(Debug, Clone)]
 pub struct RcloneError {
-    pub command: String,
+    /// Safe display name for the failing operation, e.g. "obscure <redacted>",
+    /// "lsjson --stat", "copyto". Never includes raw command arguments.
+    pub operation: String,
     pub exit_code: Option<i32>,
     pub stderr: String,
 }
@@ -25,7 +28,7 @@ impl std::fmt::Display for RcloneError {
         write!(
             f,
             "rclone {} exited {}: {}",
-            self.command, code, self.stderr
+            self.operation, code, self.stderr
         )
     }
 }
@@ -73,16 +76,29 @@ impl std::fmt::Debug for Rclone {
     }
 }
 
-/// Global registry mapping config paths to their per-session lock.
+/// Global registry mapping config paths to their per-session lock. Entries are
+/// held weakly: once every `Rclone` handle for a session is dropped, the entry
+/// can no longer upgrade and is pruned, so the map cannot grow without bound
+/// as short-lived sessions come and go.
 fn lock_for(config: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
-    use std::sync::{Arc, Mutex, OnceLock};
-    static LOCKS: OnceLock<Mutex<std::collections::HashMap<PathBuf, Arc<Mutex<()>>>>> =
+    use std::sync::{Arc, Mutex, OnceLock, Weak};
+    static LOCKS: OnceLock<Mutex<std::collections::HashMap<PathBuf, Weak<Mutex<()>>>>> =
         OnceLock::new();
     let map = LOCKS.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
     let mut map = map.lock().unwrap_or_else(|e| e.into_inner());
-    map.entry(config.to_path_buf())
-        .or_insert_with(|| Arc::new(Mutex::new(())))
-        .clone()
+
+    // Opportunistically prune entries whose last strong handle is gone.
+    map.retain(|_, weak| weak.upgrade().is_some());
+
+    let key = config.to_path_buf();
+    match map.get(&key).and_then(Weak::upgrade) {
+        Some(arc) => arc,
+        None => {
+            let arc = Arc::new(Mutex::new(()));
+            map.insert(key, Arc::downgrade(&arc));
+            arc
+        }
+    }
 }
 
 impl Rclone {
@@ -115,9 +131,18 @@ impl Rclone {
     }
 
     /// Removes the on-disk config directory for a session given a state dir.
+    /// Acquires the same per-config lock used by run/write so a running rclone
+    /// operation for that session isn't racing a GC/eviction deletion.
     pub fn remove_session_dir(state_dir: &Path, session_id: &str) {
-        let dir = state_dir.join("rclone").join(session_id);
-        let _ = std::fs::remove_dir_all(&dir);
+        let config = state_dir
+            .join("rclone")
+            .join(session_id)
+            .join("rclone.conf");
+        let lock = lock_for(&config);
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(dir) = config.parent() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
     }
 
     pub fn ensure_config(&self) -> Result<PathBuf> {
@@ -147,18 +172,27 @@ impl Rclone {
     }
 
     pub fn run(&self, args: &[String]) -> Result<Vec<u8>> {
-        self.run_with_status(args)
+        // Safe default label: derive from args but redact anything after the
+        // first argument of sensitive commands (obscure takes a secret).
+        let operation = describe_operation(args);
+        self.run_with_status(args, &operation)
             .map_err(VaultError::RcloneCommand)
     }
 
     /// Runs rclone and returns a structured error on failure (exit code,
-    /// stderr, command) so callers can classify failures (e.g. not-found vs
-    /// transient/network/auth). Serialized per session config to avoid concurrent
-    /// rclone processes clobbering the same config file.
-    pub fn run_with_status(&self, args: &[String]) -> std::result::Result<Vec<u8>, RcloneError> {
+    /// stderr, safe operation label) so callers can classify failures (e.g.
+    /// not-found vs transient/network/auth) without leaking secrets. The
+    /// caller supplies the `operation` label, which must never contain raw
+    /// arguments. Serialized per session config to avoid concurrent rclone
+    /// processes clobbering the same config file.
+    pub fn run_with_status(
+        &self,
+        args: &[String],
+        operation: &str,
+    ) -> std::result::Result<Vec<u8>, RcloneError> {
         let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
         let config = self.ensure_config().map_err(|e| RcloneError {
-            command: args.join(" "),
+            operation: operation.to_string(),
             exit_code: None,
             stderr: format!("failed to ensure config: {e}"),
         })?;
@@ -168,7 +202,7 @@ impl Rclone {
             cmd.current_dir(dir);
         }
         let output = cmd.output().map_err(|e| RcloneError {
-            command: args.join(" "),
+            operation: operation.to_string(),
             exit_code: None,
             stderr: format!("failed to run rclone: {e}"),
         })?;
@@ -178,7 +212,7 @@ impl Rclone {
             let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
             let detail = if stderr.is_empty() { stdout } else { stderr };
             return Err(RcloneError {
-                command: args.join(" "),
+                operation: operation.to_string(),
                 exit_code: output.status.code(),
                 stderr: detail,
             });
@@ -190,8 +224,15 @@ impl Rclone {
         Ok(String::from_utf8_lossy(&self.run(args)?).trim().to_string())
     }
 
+    /// Obscures a password with `rclone obscure`. The error label is redacted
+    /// so a failure never leaks the password into logs or API responses.
     pub fn obscure_password(&self, password: &str) -> Result<String> {
-        self.run_text(&["obscure".to_string(), password.to_string()])
+        self.run_with_status(
+            &["obscure".to_string(), password.to_string()],
+            "obscure <redacted>",
+        )
+        .map(|bytes| String::from_utf8_lossy(&bytes).trim().to_string())
+        .map_err(VaultError::RcloneCommand)
     }
 
     pub fn write_drive_remote(
@@ -299,6 +340,19 @@ pub fn remote_spec(remote_name: &str, path: &str) -> String {
     }
 }
 
+/// Builds a safe, secret-free label for an rclone invocation. Only the command
+/// name is shown; arguments that may hold secrets (e.g. `obscure`'s password)
+/// are redacted.
+fn describe_operation(args: &[String]) -> String {
+    let Some(cmd) = args.first() else {
+        return "rclone".to_string();
+    };
+    match cmd.as_str() {
+        "obscure" => "obscure <redacted>".to_string(),
+        other => other.to_string(),
+    }
+}
+
 /// Spec for a path inside the crypt remote root, e.g. `drive-crypt:files/x.txt`.
 pub fn crypt_spec(relative: &str) -> String {
     remote_spec(DRIVE_CRYPT_REMOTE, relative)
@@ -319,7 +373,11 @@ mod tests {
             "VAULT_COOKIE_SECRET",
             "test-secret-that-is-long-enough-for-hmac-0123456789",
         );
-        let cfg = crate::config::load();
+        let mut cfg = crate::config::load();
+        cfg.state_dir = std::env::temp_dir().join(format!(
+            "vault-rclone-test-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
         let rclone = Rclone::for_session(&cfg, "perm-test");
         rclone.ensure_config().unwrap();
 

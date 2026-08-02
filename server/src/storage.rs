@@ -168,11 +168,14 @@ impl DriveStore {
         if path.is_empty() {
             return Ok(None);
         }
-        match self.rclone.run_with_status(&[
-            "lsjson".to_string(),
-            "--stat".to_string(),
-            self.remote(&path),
-        ]) {
+        match self.rclone.run_with_status(
+            &[
+                "lsjson".to_string(),
+                "--stat".to_string(),
+                self.remote(&path),
+            ],
+            "lsjson --stat",
+        ) {
             Ok(bytes) => {
                 let item: RcloneLsJsonItem = serde_json::from_slice(&bytes)
                     .map_err(|e| VaultError::Meta(format!("parse lsjson stat: {e}")))?;

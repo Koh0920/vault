@@ -48,6 +48,26 @@ fn test_cfg(root: &Path) -> AppConfig {
     cfg
 }
 
+/// Writes an executable fake `rclone` script that always exits 1 with the given
+/// message on stderr. Used to deterministically exercise error classification
+/// without depending on network or backend behavior.
+fn fake_rclone_script(dir: &Path, stderr_msg: &str) -> PathBuf {
+    let fake = dir.join("fake-rclone");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let script = format!("#!/bin/sh\necho '{stderr_msg}' >&2\nexit 1\n");
+        std::fs::write(&fake, script).unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = stderr_msg;
+        std::fs::write(&fake, "exit 1\n").unwrap();
+    }
+    fake
+}
+
 /// Configures the session's rclone config with a `[drive]` remote backed by the
 /// `local` backend, and returns a plain DriveStore bound to that session. The
 /// rclone process is pinned to `root` as its working directory because the
@@ -127,7 +147,8 @@ async fn stat_error_classification() {
     let root = tempfile::tempdir().unwrap();
     let cfg = test_cfg(root.path());
 
-    // Missing path -> Ok(None), not an error.
+    // Missing path -> Ok(None), not an error. Verified against the real rclone
+    // local backend (exit 3 "directory not found").
     let store = plain_store(&cfg, "classify", root.path());
     let missing = store.stat("Vault/does-not-exist.json").await;
     match missing {
@@ -135,62 +156,45 @@ async fn stat_error_classification() {
         other => panic!("missing path must be Ok(None), got {:?}", other),
     }
 
-    // Invalid config (remote not defined) -> Err (propagated, not Ok(None)).
-    let bad = Rclone::for_session(&cfg, "classify").with_workdir(root.path().to_path_buf());
-    let out = bad.run_with_status(&[
-        "lsjson".to_string(),
-        "--stat".to_string(),
-        "bogus:path.txt".to_string(),
-    ]);
+    // Every other failure class is verified deterministically with a fake
+    // rclone binary, so CI never depends on network/backend behavior.
+    // 1) invalid config / generic exit 1 -> Err, not Ok(None).
+    let fake_exit1 = fake_rclone_script(root.path(), "didn't find section in config file");
+    let mut cfg1 = test_cfg(root.path());
+    cfg1.rclone_binary = fake_exit1;
+    let r1 = Rclone::for_session(&cfg1, "classify").with_workdir(root.path().to_path_buf());
+    let out = r1.run_with_status(
+        &[
+            "lsjson".to_string(),
+            "--stat".to_string(),
+            "bogus:path.txt".to_string(),
+        ],
+        "lsjson --stat",
+    );
     match out {
         Err(e) => {
-            assert!(
-                !e.is_not_found(),
-                "config error must not be treated as not-found"
-            );
+            assert!(!e.is_not_found(), "config error must not be not-found");
             assert_ne!(e.exit_code, Some(3));
         }
         other => panic!("invalid config must be Err, got {:?}", other),
     }
 
-    // Generic exit 1 (nonexistent remote section) -> Err, not Ok(None).
-    let store = plain_store(&cfg, "classify", root.path());
-    let missing_remote = store
-        .rclone
-        .run_with_status(&["lsjson".to_string(), "nosuchremote:".to_string()]);
-    match missing_remote {
-        Err(e) => {
-            assert!(!e.is_not_found());
-            assert_eq!(e.exit_code, Some(1));
-        }
-        other => panic!("generic exit 1 must be Err, got {:?}", other),
-    }
-
-    // Authentication-style failure (invalid/expired credentials) must also be
-    // Err, not treated as not-found. Simulated with an s3 remote that has no
-    // credentials: rclone fails with a 403/credential error (exit 1).
-    let authed = Rclone::for_session(&cfg, "classify-auth").with_workdir(root.path().to_path_buf());
-    let _ = authed.run_text(&[
-        "config".to_string(),
-        "create".to_string(),
-        "s3auth".to_string(),
-        "s3".to_string(),
-        "provider".to_string(),
-        "AWS".to_string(),
-    ]);
-    let broken = Rclone::for_session(&cfg, "classify-auth").with_workdir(root.path().to_path_buf());
-    let out = broken.run_with_status(&[
-        "lsjson".to_string(),
-        "--stat".to_string(),
-        "s3auth:bucket/key".to_string(),
-    ]);
+    // 2) auth-style failure -> Err, not Ok(None).
+    let fake_auth = fake_rclone_script(root.path(), "auth failed: permission denied");
+    let mut cfg2 = test_cfg(root.path());
+    cfg2.rclone_binary = fake_auth;
+    let r2 = Rclone::for_session(&cfg2, "classify-auth").with_workdir(root.path().to_path_buf());
+    let out = r2.run_with_status(
+        &[
+            "lsjson".to_string(),
+            "--stat".to_string(),
+            "s3auth:bucket/key".to_string(),
+        ],
+        "lsjson --stat",
+    );
     match out {
         Err(e) => {
-            assert!(
-                !e.is_not_found(),
-                "auth failure must not be treated as not-found: {}",
-                e.stderr
-            );
+            assert!(!e.is_not_found(), "auth failure must not be not-found");
         }
         other => panic!("auth failure must be Err, got {:?}", other),
     }
@@ -201,10 +205,12 @@ async fn stat_propagates_errors_through_store() {
     let _ = require_rclone();
 
     let root = tempfile::tempdir().unwrap();
-    let cfg = test_cfg(root.path());
+    // Fake rclone that always fails (deterministic; no network dependency).
+    let mut cfg = test_cfg(root.path());
+    cfg.rclone_binary = fake_rclone_script(root.path(), "boom");
 
-    // A DriveStore whose config references a remote that doesn't exist: stat()
-    // must surface the rclone error, not Ok(None).
+    // A DriveStore whose rclone invocation fails: stat() must surface the
+    // rclone error, not Ok(None).
     let rclone = Rclone::for_session(&cfg, "classify-2").with_workdir(root.path().to_path_buf());
     let store = DriveStore {
         rclone,
@@ -249,5 +255,65 @@ fn concurrent_section_writes_are_serialized() {
             config.contains(&format!("[sec{i}]")),
             "section [sec{i}] lost in concurrent writes"
         );
+    }
+}
+
+/// A fake rclone that always fails on `obscure`; verifies the crypt password is
+/// never leaked into error messages or API responses.
+#[test]
+fn obscure_failure_does_not_leak_secret() {
+    let root = tempfile::tempdir().unwrap();
+
+    // Satisfy config::load() (tests run off loopback).
+    std::env::set_var(
+        "VAULT_COOKIE_SECRET",
+        "test-secret-that-is-long-enough-for-hmac-0123456789",
+    );
+
+    // Write an executable script that always exits 1 regardless of args.
+    let fake = fake_rclone_script(root.path(), "obscure failed");
+
+    let mut cfg = vault_server::config::load();
+    cfg.rclone_binary = fake;
+    cfg.state_dir = root.path().join("state");
+    cfg.temp_dir = root.path().join("tmp");
+    let secret = "must-not-appear-super-secret-crypt-password";
+    let rclone = Rclone::for_session(&cfg, "redact-test");
+    let err = rclone
+        .obscure_password(secret)
+        .expect_err("obscure must fail against the fake binary");
+
+    // Neither the error Display (server log path) nor the API user message
+    // may contain the password.
+    let display = err.to_string();
+    assert!(
+        !display.contains(secret),
+        "Display leaked secret: {display}"
+    );
+
+    let api_message = err.user_message();
+    assert!(
+        !api_message.contains(secret),
+        "API message leaked secret: {api_message}"
+    );
+    // The safe label mentions the operation without the argument; the API
+    // message must not contain raw stderr.
+    assert!(
+        api_message.contains("obscure"),
+        "expected generic message, got {api_message}"
+    );
+    assert!(
+        !api_message.contains("obscure failed"),
+        "API message must not expose raw stderr: {api_message}"
+    );
+
+    // Also confirm a successful path would never embed it, and the RcloneError
+    // operation label is redacted.
+    match err {
+        VaultError::RcloneCommand(e) => {
+            assert_eq!(e.operation, "obscure <redacted>");
+            assert!(!e.stderr.contains(secret));
+        }
+        other => panic!("expected RcloneCommand, got {other:?}"),
     }
 }

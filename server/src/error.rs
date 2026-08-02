@@ -36,6 +36,38 @@ impl VaultError {
     pub fn msg(message: impl Into<String>) -> Self {
         VaultError::Message(message.into())
     }
+
+    /// A safe, user-facing message for API responses. Internal error details
+    /// (raw rclone stderr, which may embed paths or secrets) are generalized
+    /// here; the full detail is available via `to_string()` for server logs.
+    pub fn user_message(&self) -> String {
+        match self {
+            VaultError::Message(m) => m.clone(),
+            VaultError::Crypto(m) => format!("crypto: {m}"),
+            VaultError::Rclone(_) => {
+                "a storage operation failed. Check the server logs for details.".to_string()
+            }
+            VaultError::RcloneCommand(e) => {
+                if e.is_not_found() {
+                    "not found".to_string()
+                } else {
+                    format!(
+                        "storage operation failed ({}). Check the server logs for details.",
+                        e.operation
+                    )
+                }
+            }
+            VaultError::Drive(m) => format!("google drive: {m}"),
+            VaultError::Io(_) => "a storage I/O operation failed".to_string(),
+            VaultError::Serde(_) => "invalid data received".to_string(),
+            VaultError::Reqwest(_) => "upstream request failed".to_string(),
+            VaultError::Sqlite(_) => "local database error".to_string(),
+            VaultError::Meta(m) => format!("metadata: {m}"),
+            VaultError::NotFound(m) => format!("not found: {m}"),
+            VaultError::TooLarge(m) => format!("payload too large: {m}"),
+            VaultError::Forbidden(m) => format!("forbidden: {m}"),
+        }
+    }
 }
 
 pub fn err<T>(message: impl Into<String>) -> Result<T> {
