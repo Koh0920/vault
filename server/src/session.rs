@@ -6,7 +6,7 @@ use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 #[derive(Debug, Clone)]
 pub struct Session {
@@ -21,11 +21,22 @@ pub struct Session {
     pub connected: bool,
 }
 
+impl Session {
+    /// Zeroes secrets so dropped sessions don't leave keys in memory.
+    pub fn zeroize(&mut self) {
+        if let Some(key) = &mut self.master_key {
+            crate::crypto::ZeroizeExt::zeroize(key);
+        }
+        self.token = None;
+        self.vault_id = None;
+        self.connected = false;
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SessionStore {
     inner: Arc<Mutex<HashMap<String, Session>>>,
-    #[allow(dead_code)]
-    max_age: Duration,
+    max_count: usize,
 }
 
 fn mac_secret(cfg: &AppConfig) -> Hmac<Sha256> {
@@ -37,7 +48,7 @@ impl SessionStore {
         let _ = cfg;
         SessionStore {
             inner: Arc::new(Mutex::new(HashMap::new())),
-            max_age: Duration::from_secs(60 * 60),
+            max_count: cfg.session_max_count,
         }
     }
 
@@ -67,20 +78,43 @@ impl SessionStore {
         self.sign(cfg, id)
     }
 
-    /// Insert or replace a full session.
+    /// Insert or replace a full session, enforcing the max session count by
+    /// evicting the oldest non-expired session when at capacity.
     pub fn put(&self, session: Session) {
-        self.inner.lock().unwrap().insert(session.id.clone(), session);
+        let mut map = self.inner.lock().unwrap();
+        self.purge_expired(&mut map);
+        if map.len() >= self.max_count && !map.contains_key(&session.id) {
+            if let Some(expired_id) = map.keys().next().cloned() {
+                if let Some(mut evicted) = map.remove(&expired_id) {
+                    evicted.zeroize();
+                }
+            }
+        }
+        map.insert(session.id.clone(), session);
     }
 
     pub fn insert(&self, session: Session) {
         self.put(session);
     }
 
+    fn purge_expired(&self, map: &mut HashMap<String, Session>) {
+        let now = SystemTime::now();
+        let expired_ids: Vec<String> = map
+            .iter()
+            .filter(|(_, s)| now > s.expires_at)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in expired_ids {
+            if let Some(mut s) = map.remove(&id) {
+                s.zeroize();
+            }
+        }
+    }
+
     pub fn get(&self, id: &str) -> Option<Session> {
-        let map = self.inner.lock().unwrap();
-        map.get(id)
-            .filter(|s| !Self::is_expired(s))
-            .cloned()
+        let mut map = self.inner.lock().unwrap();
+        self.purge_expired(&mut map);
+        map.get(id).filter(|s| !Self::is_expired(s)).cloned()
     }
 
     pub fn update<F>(&self, id: &str, mutate: F) -> Result<Option<Session>>
@@ -88,6 +122,7 @@ impl SessionStore {
         F: FnOnce(&mut Session) -> Result<()>,
     {
         let mut map = self.inner.lock().unwrap();
+        self.purge_expired(&mut map);
         let session = map
             .get_mut(id)
             .ok_or_else(|| VaultError::NotFound(id.to_string()))?;
@@ -96,24 +131,47 @@ impl SessionStore {
     }
 
     pub fn remove(&self, id: &str) {
-        self.inner.lock().unwrap().remove(id);
+        let mut map = self.inner.lock().unwrap();
+        if let Some(mut s) = map.remove(id) {
+            s.zeroize();
+        }
     }
 
     pub fn drop_credentials(&self, id: &str) {
         if let Some(session) = self.inner.lock().unwrap().get_mut(id) {
-            session.token = None;
-            session.master_key = None;
-            session.vault_id = None;
-            session.connected = false;
+            session.zeroize();
         }
+    }
+
+    /// Removes expired sessions and their on-disk rclone configs.
+    pub fn gc(&self, cfg: &AppConfig) {
+        let mut map = self.inner.lock().unwrap();
+        self.purge_expired(&mut map);
+        let ids: Vec<String> = map.keys().cloned().collect();
+        drop(map);
+        for id in ids {
+            let rclone = crate::rclone::Rclone::for_session(cfg, &id);
+            rclone.remove_all();
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.inner.lock().unwrap().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     fn cfg() -> AppConfig {
+        // Tests run off loopback; provide a strong secret to satisfy config::load.
+        std::env::set_var("VAULT_COOKIE_SECRET", "test-secret-that-is-long-enough-for-hmac-0123456789");
         crate::config::load()
     }
 
@@ -144,5 +202,44 @@ mod tests {
         assert!(store.get("s1").is_some());
         store.drop_credentials("s1");
         assert!(store.get("s1").unwrap().token.is_none());
+    }
+
+    #[test]
+    fn expired_session_removed() {
+        let cfg = cfg();
+        let store = SessionStore::new(&cfg);
+        let session = Session {
+            id: "exp".into(),
+            token: None,
+            master_key: None,
+            vault_id: None,
+            code_verifier: String::new(),
+            state: String::new(),
+            expires_at: SystemTime::now() - Duration::from_secs(10),
+            connected: false,
+        };
+        store.put(session);
+        assert!(store.get("exp").is_none());
+        assert_eq!(store.len(), 0);
+    }
+
+    #[test]
+    fn max_count_evicts() {
+        let cfg = cfg();
+        let mut store = SessionStore::new(&cfg);
+        store.max_count = 2;
+        for i in 0..3 {
+            store.put(Session {
+                id: format!("s{i}"),
+                token: None,
+                master_key: None,
+                vault_id: None,
+                code_verifier: String::new(),
+                state: String::new(),
+                expires_at: SystemTime::now() + Duration::from_secs(60),
+                connected: false,
+            });
+        }
+        assert!(store.len() <= 2);
     }
 }

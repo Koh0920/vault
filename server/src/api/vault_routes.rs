@@ -30,7 +30,8 @@ async fn vault_status(
     let session = session_from_cookie(&headers, &state.sessions, &state.cfg)
         .ok_or_else(|| ApiError(VaultError::Message("no session".into())))?;
     let token = require_token(&session)?;
-    let status = vault::vault_status(&state.cfg, &token).await?;
+    let unlocked = session.master_key.is_some() && session.vault_id.is_some();
+    let status = vault::vault_status(&state.cfg, &token, &session.id, unlocked).await?;
     Ok(Json(json!(status)))
 }
 
@@ -45,13 +46,19 @@ async fn vault_initialize(
     let session = session_from_cookie(&headers, &state.sessions, &state.cfg)
         .ok_or_else(|| ApiError(VaultError::Message("no session".into())))?;
     let token = require_token(&session)?;
-    let resp = vault::initialize_vault(&state.cfg, &token).await?;
-    // retain the master key in the session for subsequent ops (via re-derivation)
+    let created = vault::initialize_vault(&state.cfg, &token, &session.id).await?;
+    // Retain the master key + vault id in the session so subsequent ops and
+    // status reports treat the vault as unlocked.
+    let _ = state.sessions.update(&session.id, |s| {
+        s.master_key = Some(created.master_key);
+        s.vault_id = Some(created.resp.vault_id.clone());
+        Ok(())
+    });
     Ok(Json(json!({
         "ok": true,
-        "vaultId": resp.vault_id,
-        "recoveryKey": resp.recovery_key,
-        "keyFingerprint": resp.key_fingerprint,
+        "vaultId": created.resp.vault_id,
+        "recoveryKey": created.resp.recovery_key,
+        "keyFingerprint": created.resp.key_fingerprint,
     })))
 }
 
@@ -69,8 +76,8 @@ async fn vault_unlock(
     let session = session_from_cookie(&headers, &state.sessions, &state.cfg)
         .ok_or_else(|| ApiError(VaultError::Message("no session".into())))?;
     let token = require_token(&session)?;
-    let unlocked = vault::unlock_vault(&state.cfg, &token, &body.recovery_key).await?;
-    // store derived master key + vault id in session
+    let unlocked = vault::unlock_vault(&state.cfg, &token, &body.recovery_key, &session.id).await?;
+    // Store the derived master key + vault id in the session.
     let _ = state.sessions.update(&session.id, |s| {
         s.master_key = Some(unlocked.master_key);
         s.vault_id = Some(unlocked.manifest.vault_id.clone());
@@ -80,7 +87,6 @@ async fn vault_unlock(
         "ok": true,
         "vaultId": unlocked.manifest.vault_id,
         "keyFingerprint": unlocked.manifest.key_fingerprint,
-        "recoveryKey": body.recovery_key,
     })))
 }
 

@@ -2,6 +2,7 @@ use crate::api::{ApiError, session_from_cookie};
 use crate::drive::OAuthToken;
 use crate::error::{Result, VaultError};
 use crate::manifest::validate_relative_path;
+use crate::rclone::Rclone;
 use crate::vault;
 use crate::AppState;
 use axum::extract::{Multipart, State};
@@ -9,14 +10,14 @@ use axum::http::HeaderMap;
 use axum::{Json, Router, routing};
 use serde_json::{json, Value};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/v1/uploads", routing::post(upload_files))
 }
 
-fn require_token_and_key(state: &AppState, headers: &HeaderMap) -> Result<(OAuthToken, [u8; 32])> {
+fn require_token_and_key(state: &AppState, headers: &HeaderMap) -> Result<(OAuthToken, [u8; 32], String)> {
     let session = session_from_cookie(headers, &state.sessions, &state.cfg)
         .ok_or_else(|| VaultError::Message("no session".into()))?;
     let token = session
@@ -26,23 +27,47 @@ fn require_token_and_key(state: &AppState, headers: &HeaderMap) -> Result<(OAuth
     let key = session
         .master_key
         .ok_or_else(|| VaultError::Message("vault not unlocked".into()))?;
-    Ok((token, key))
+    Ok((token, key, session.id))
 }
 
-/// Streams a multipart upload to a temp file, then copies it into the crypt
-/// remote. Files are never fully held in memory.
+/// RAII guard that removes the temp file on drop, including error paths.
+struct TempFile {
+    path: PathBuf,
+    done: bool,
+}
+
+impl TempFile {
+    fn create(dir: &Path) -> Result<Self> {
+        std::fs::create_dir_all(dir).map_err(VaultError::Io)?;
+        let path = dir.join(format!("{}-upload.tmp", uuid::Uuid::new_v4().simple()));
+        Ok(TempFile { path, done: false })
+    }
+}
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        if !self.done {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
 async fn upload_files(
     State(state): State<AppState>,
     headers: HeaderMap,
-    multipart: Multipart,
+    mut multipart: Multipart,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    let (_token, key) = require_token_and_key(&state, &headers)?;
-    vault::connect_crypt(&state.cfg, &key)?;
+    let (_token, key, session_id) = require_token_and_key(&state, &headers)?;
+    vault::connect_crypt(&state.cfg, &key, &session_id)?;
 
-    std::fs::create_dir_all(&state.cfg.temp_dir).map_err(VaultError::Io)?;
+    let max_bytes = state.cfg.max_upload_bytes;
+    let max_files = state.cfg.max_upload_files;
+    let temp_dir = state.cfg.temp_dir.clone();
+    let cfg = state.cfg.clone();
 
     let mut uploaded = Vec::new();
-    let mut multipart = multipart;
+    let mut total_bytes: u64 = 0;
+    let mut file_count: usize = 0;
 
     while let Some(mut field) = multipart.next_field().await.map_err(|e| VaultError::Message(e.to_string()))? {
         let Some(name) = field.file_name().map(str::to_string) else {
@@ -53,30 +78,52 @@ async fn upload_files(
             continue;
         }
 
-        let tmp_path = PathBuf::from(&state.cfg.temp_dir)
-            .join(format!("{}-upload.tmp", uuid::Uuid::new_v4().simple()));
+        file_count += 1;
+        if file_count > max_files {
+            return Err(ApiError(VaultError::TooLarge(format!(
+                "too many files: {file_count} > {max_files}"
+            ))));
+        }
 
+        // Stream the field into a temp file, enforcing the per-file / total limits
+        // and cleaning up on any error path via RAII.
+        let mut temp = TempFile::create(&temp_dir)?;
         {
-            let mut file = std::fs::File::create(&tmp_path).map_err(VaultError::Io)?;
+            let mut file = std::fs::File::create(&temp.path).map_err(VaultError::Io)?;
+            let mut field_bytes: u64 = 0;
             while let Some(chunk) = field.chunk().await.map_err(|e| VaultError::Message(e.to_string()))? {
+                field_bytes += chunk.len() as u64;
+                total_bytes += chunk.len() as u64;
+                if field_bytes > max_bytes || total_bytes > max_bytes {
+                    return Err(ApiError(VaultError::TooLarge(format!(
+                        "upload exceeds {max_bytes} bytes limit"
+                    ))));
+                }
                 file.write_all(&chunk).map_err(VaultError::Io)?;
             }
             file.flush().map_err(VaultError::Io)?;
         }
 
         let dest_spec = crate::rclone::crypt_spec(&target);
-        let copy_result = crate::rclone::run_rclone(
-            &state.cfg,
-            &[
-                "copyto".to_string(),
-                tmp_path.display().to_string(),
-                dest_spec,
-            ],
-        );
-        let _ = std::fs::remove_file(&tmp_path);
+        let tmp_path = temp.path.clone();
+        let copy_result = {
+            let rclone = Rclone::for_session(&cfg, &session_id);
+            tokio::task::spawn_blocking(move || {
+                rclone.run(&[
+                    "copyto".to_string(),
+                    tmp_path.display().to_string(),
+                    dest_spec,
+                ])
+            })
+            .await
+            .map_err(|e| VaultError::Message(format!("task join: {e}")))?
+        };
 
         match copy_result {
-            Ok(_) => uploaded.push(json!({ "name": target, "ok": true })),
+            Ok(_) => {
+                temp.done = true;
+                uploaded.push(json!({ "name": target, "ok": true }))
+            }
             Err(e) => uploaded.push(json!({ "name": target, "ok": false, "error": e.to_string() })),
         }
     }
@@ -84,5 +131,6 @@ async fn upload_files(
     Ok(Json(json!({
         "ok": true,
         "uploaded": uploaded,
+        "count": uploaded.len(),
     })))
 }

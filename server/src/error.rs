@@ -22,6 +22,10 @@ pub enum VaultError {
     Meta(String),
     #[error("not found: {0}")]
     NotFound(String),
+    #[error("payload too large: {0}")]
+    TooLarge(String),
+    #[error("forbidden: {0}")]
+    Forbidden(String),
 }
 
 pub type Result<T> = std::result::Result<T, VaultError>;

@@ -23,8 +23,8 @@ async fn list_jobs(
     headers: HeaderMap,
 ) -> std::result::Result<Json<Value>, ApiError> {
     let session = require_session(&state, &headers)?;
-    let jobs = state.jobs.list();
-    Ok(Json(json!({ "ok": true, "jobs": jobs, "session": session.id })))
+    let jobs = state.jobs.list(&session.id);
+    Ok(Json(json!({ "ok": true, "jobs": jobs })))
 }
 
 async fn job_status(
@@ -32,8 +32,8 @@ async fn job_status(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    let _ = require_session(&state, &headers)?;
-    let job = state.jobs.get(&id).ok_or_else(|| {
+    let session = require_session(&state, &headers)?;
+    let job = state.jobs.get(&id, &session.id).ok_or_else(|| {
         ApiError(VaultError::NotFound(format!("job {id}")))
     })?;
     Ok(Json(json!(job)))
@@ -44,7 +44,7 @@ async fn cancel_job(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    let _ = require_session(&state, &headers)?;
-    state.jobs.cancel(&id)?;
+    let session = require_session(&state, &headers)?;
+    state.jobs.cancel(&id, &session.id)?;
     Ok(Json(json!({ "ok": true, "jobId": id })))
 }

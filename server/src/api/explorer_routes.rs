@@ -22,7 +22,7 @@ struct ListParams {
     path: Option<String>,
 }
 
-fn require_token_and_key(state: &AppState, headers: &HeaderMap) -> Result<(OAuthToken, [u8; 32])> {
+fn require_token_and_key(state: &AppState, headers: &HeaderMap) -> Result<(OAuthToken, [u8; 32], String)> {
     let session = session_from_cookie(headers, &state.sessions, &state.cfg)
         .ok_or_else(|| VaultError::Message("no session".into()))?;
     let token = session
@@ -32,7 +32,7 @@ fn require_token_and_key(state: &AppState, headers: &HeaderMap) -> Result<(OAuth
     let key = session
         .master_key
         .ok_or_else(|| VaultError::Message("vault not unlocked".into()))?;
-    Ok((token, key))
+    Ok((token, key, session.id))
 }
 
 async fn list_files(
@@ -40,11 +40,20 @@ async fn list_files(
     headers: HeaderMap,
     Query(params): Query<ListParams>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    let (_token, key) = require_token_and_key(&state, &headers)?;
+    let (_token, key, session_id) = require_token_and_key(&state, &headers)?;
     let path = validate_relative_path(params.path.as_deref().unwrap_or(""))?;
-    vault::connect_crypt(&state.cfg, &key)?;
-    let store = DriveStore::new(&state.cfg, true);
-    let entries = store.list(&path).await?;
+
+    let cfg = state.cfg.clone();
+    let path_for_task = path.clone();
+    let entries = tokio::task::spawn_blocking(move || {
+        vault::connect_crypt(&cfg, &key, &session_id)?;
+        let store = DriveStore::new(crate::rclone::Rclone::for_session(&cfg, &session_id), true);
+        // Blocking rclone call; run off the async runtime.
+        futures::executor::block_on(store.list(&path_for_task))
+    })
+    .await
+    .map_err(|e| ApiError(VaultError::Message(format!("task join: {e}"))))??;
+
     Ok(Json(json!({
         "ok": true,
         "path": path,
@@ -62,16 +71,36 @@ async fn preview_file(
     headers: HeaderMap,
     Query(params): Query<PreviewParams>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    let (_token, key) = require_token_and_key(&state, &headers)?;
+    let (_token, key, session_id) = require_token_and_key(&state, &headers)?;
     let path = validate_relative_path(&params.path)?;
-    vault::connect_crypt(&state.cfg, &key)?;
-    let store = DriveStore::new(&state.cfg, true);
-    let bytes = store.get(&path).await?;
+
+    let max_preview = state.cfg.max_preview_bytes;
+    let cfg = state.cfg.clone();
+    let path_for_task = path.clone();
+    let bytes = tokio::task::spawn_blocking(move || {
+        vault::connect_crypt(&cfg, &key, &session_id)?;
+        let store = DriveStore::new(crate::rclone::Rclone::for_session(&cfg, &session_id), true);
+        futures::executor::block_on(store.get(&path_for_task))
+    })
+    .await
+    .map_err(|e| ApiError(VaultError::Message(format!("task join: {e}"))))??;
+
+    if bytes.len() > max_preview {
+        return Err(ApiError(VaultError::TooLarge(format!(
+            "file is {} bytes; preview limited to {} bytes",
+            bytes.len(),
+            max_preview
+        ))));
+    }
+
     let text = String::from_utf8(bytes.clone()).ok();
     let mime = mime_guess(&params.path);
+    if text.is_none() && mime == "application/octet-stream" {
+        return Err(ApiError(VaultError::Forbidden("binary files cannot be previewed".into())));
+    }
     Ok(Json(json!({
         "ok": true,
-        "path": path,
+        "path": params.path,
         "mimeType": mime,
         "text": text,
         "size": bytes.len(),

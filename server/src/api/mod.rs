@@ -27,6 +27,8 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status = match self.0 {
             VaultError::NotFound(_) => StatusCode::NOT_FOUND,
+            VaultError::TooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
+            VaultError::Forbidden(_) => StatusCode::FORBIDDEN,
             _ => StatusCode::BAD_REQUEST,
         };
         (
@@ -60,7 +62,14 @@ pub fn session_from_cookie(
 /// Returns the Set-Cookie header value for a session id.
 pub fn set_cookie_header(id: &str, state: &AppState) -> String {
     let value = state.sessions.cookie_value(&state.cfg, id);
-    format!("{SESSION_COOKIE}={value}; HttpOnly; Path=/; SameSite=Lax; Max-Age=3600")
+    let mut header = format!(
+        "{SESSION_COOKIE}={value}; HttpOnly; Path=/; SameSite=Lax; Max-Age={}",
+        state.cfg.session_max_age_secs
+    );
+    if state.cfg.session_cookie_secure {
+        header.push_str("; Secure");
+    }
+    header
 }
 
 pub async fn healthz() -> Json<Value> {

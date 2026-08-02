@@ -1,4 +1,4 @@
-use crate::api::{ApiError, session_from_cookie};
+use crate::api::{ApiError, session_from_cookie, set_cookie_header};
 use crate::drive;
 use crate::session::Session;
 use crate::AppState;
@@ -40,21 +40,15 @@ async fn oauth_start(
         vault_id: None,
         code_verifier: verifier,
         state: oauth_state,
-        expires_at: SystemTime::now() + std::time::Duration::from_secs(3600),
+        expires_at: SystemTime::now() + std::time::Duration::from_secs(state.cfg.session_max_age_secs),
         connected: false,
     };
     state.sessions.put(session);
 
-    let cookie = state.sessions.cookie_value(&state.cfg, &id);
-    let set_cookie = format!(
-        "{}={cookie}; HttpOnly; Path=/; SameSite=Lax; Max-Age=3600",
-        crate::api::SESSION_COOKIE
-    );
-
     let body = json!({ "ok": true, "url": url });
     let mut resp = axum::Json(body).into_response();
     resp.headers_mut()
-        .insert("Set-Cookie", set_cookie.parse().unwrap());
+        .insert("Set-Cookie", set_cookie_header(&id, &state).parse().unwrap());
     let _ = _params;
     Ok(resp)
 }
@@ -115,8 +109,9 @@ async fn drive_disconnect(
 ) -> std::result::Result<Json<Value>, ApiError> {
     if let Some(s) = session_from_cookie(&headers, &state.sessions, &state.cfg) {
         state.sessions.drop_credentials(&s.id);
-        let _ = crate::rclone::remove_section(&state.cfg, crate::rclone::DRIVE_REMOTE);
-        let _ = crate::rclone::remove_section(&state.cfg, crate::rclone::DRIVE_CRYPT_REMOTE);
+        // Remove the entire session-local config (drive token + crypt secrets).
+        let rclone = crate::rclone::Rclone::for_session(&state.cfg, &s.id);
+        rclone.remove_all();
     }
     Ok(Json(json!({ "ok": true })))
 }

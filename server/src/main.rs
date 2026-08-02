@@ -1,9 +1,10 @@
+use std::time::Duration;
+use tower_http::limit::RequestBodyLimitLayer;
+use tower_http::services::ServeDir;
+use tower_http::trace::TraceLayer;
 use vault_server::api;
 use vault_server::config;
 use vault_server::AppState;
-use tower_http::cors::CorsLayer;
-use tower_http::services::ServeDir;
-use tower_http::trace::TraceLayer;
 
 #[tokio::main]
 async fn main() {
@@ -17,17 +18,22 @@ async fn main() {
     let cfg = config::load();
     let state = AppState::new(cfg.clone());
 
-    let frontend_dir = if cfg.frontend_dir.exists() {
-        cfg.frontend_dir.clone()
-    } else {
-        // fall back to bundled dist if configured path missing
-        cfg.frontend_dir.clone()
-    };
+    // Periodic session GC: drops expired sessions + their rclone config dirs.
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                state.sessions.gc(&state.cfg);
+            }
+        });
+    }
 
+    let frontend_dir = cfg.frontend_dir.clone();
     let api_router = api::router();
     let app = api_router
         .fallback_service(ServeDir::new(&frontend_dir))
-        .layer(CorsLayer::permissive())
+        .layer(RequestBodyLimitLayer::new(cfg.max_upload_bytes as usize))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 

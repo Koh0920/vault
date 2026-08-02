@@ -11,7 +11,7 @@ path = "src/main.rs"
 [dependencies]
 axum = { version = "0.7", features = ["multipart"] }
 tokio = { version = "1", features = ["full"] }
-tower-http = { version = "0.5", features = ["fs", "trace", "cors"] }
+tower-http = { version = "0.5", features = ["fs", "trace", "limit"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 serde = { version = "1", features = ["derive"] }
@@ -32,6 +32,7 @@ tempfile = "3"
 async-trait = "0.1"
 thiserror = "1"
 uuid = { version = "1", features = ["v4"] }
+futures = { version = "0.3", default-features = false, features = ["executor"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
