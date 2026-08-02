@@ -118,6 +118,37 @@ body {
   margin-bottom: 12px;
 }
 
+.or-sep {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 14px 0 10px;
+}
+.or-sep::before,
+.or-sep::after {
+  content: "";
+  display: inline-block;
+  width: 28px;
+  height: 1px;
+  background: var(--border);
+  vertical-align: middle;
+  margin: 0 8px;
+}
+.link-like {
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  font-size: 13px;
+}
+.import-row {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  margin-top: 16px;
+}
+.small { font-size: 12px; }
+
 .workspace { margin-top: 20px; }
 
 .topbar {

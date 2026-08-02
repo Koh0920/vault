@@ -14,10 +14,10 @@ export interface DriveStatus {
 
 export interface VaultStatus {
   ok: boolean;
-  exists?: boolean;
+  vaultExists: boolean;
   vaultId?: string | null;
   keyFingerprint?: string | null;
-  initialized?: boolean;
+  unlocked: boolean;
 }
 
 export interface InitializeResponse {
@@ -31,7 +31,6 @@ export interface UnlockResponse {
   ok: boolean;
   vaultId: string;
   keyFingerprint: string;
-  recoveryKey: string;
 }
 
 export interface ObjectEntry {
