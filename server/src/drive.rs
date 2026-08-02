@@ -76,8 +76,14 @@ pub fn normalize_token(
         .unwrap_or_else(|| OffsetDateTime::now_utc().format(&Rfc3339).unwrap());
 
     let mut map = serde_json::Map::new();
-    map.insert("access_token".to_string(), Json::String(access_token.to_string()));
-    map.insert("token_type".to_string(), Json::String(token_type.to_string()));
+    map.insert(
+        "access_token".to_string(),
+        Json::String(access_token.to_string()),
+    );
+    map.insert(
+        "token_type".to_string(),
+        Json::String(token_type.to_string()),
+    );
     map.insert("expiry".to_string(), Json::String(expiry));
     if let Some(rt) = refresh_token {
         map.insert("refresh_token".to_string(), Json::String(rt.to_string()));
@@ -112,7 +118,10 @@ pub async fn exchange_code(cfg: &AppConfig, code: &str, code_verifier: &str) -> 
         .get("access_token")
         .and_then(Json::as_str)
         .ok_or_else(|| VaultError::Drive("no access_token in response".into()))?;
-    let token_type = token.get("token_type").and_then(Json::as_str).unwrap_or("Bearer");
+    let token_type = token
+        .get("token_type")
+        .and_then(Json::as_str)
+        .unwrap_or("Bearer");
     let refresh_token = token.get("refresh_token").and_then(Json::as_str);
     let expires_in = token.get("expires_in").and_then(Json::as_i64);
 

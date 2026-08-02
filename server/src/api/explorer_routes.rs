@@ -1,4 +1,4 @@
-use crate::api::{ApiError, session_from_cookie};
+use crate::api::{session_from_cookie, ApiError};
 use crate::drive::OAuthToken;
 use crate::error::{Result, VaultError};
 use crate::manifest::validate_relative_path;
@@ -7,7 +7,7 @@ use crate::vault;
 use crate::AppState;
 use axum::extract::{Query, State};
 use axum::http::HeaderMap;
-use axum::{Json, Router, routing};
+use axum::{routing, Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -22,7 +22,10 @@ struct ListParams {
     path: Option<String>,
 }
 
-fn require_token_and_key(state: &AppState, headers: &HeaderMap) -> Result<(OAuthToken, [u8; 32], String)> {
+fn require_token_and_key(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<(OAuthToken, [u8; 32], String)> {
     let session = session_from_cookie(headers, &state.sessions, &state.cfg)
         .ok_or_else(|| VaultError::Message("no session".into()))?;
     let token = session
@@ -96,7 +99,9 @@ async fn preview_file(
     let text = String::from_utf8(bytes.clone()).ok();
     let mime = mime_guess(&params.path);
     if text.is_none() && mime == "application/octet-stream" {
-        return Err(ApiError(VaultError::Forbidden("binary files cannot be previewed".into())));
+        return Err(ApiError(VaultError::Forbidden(
+            "binary files cannot be previewed".into(),
+        )));
     }
     Ok(Json(json!({
         "ok": true,

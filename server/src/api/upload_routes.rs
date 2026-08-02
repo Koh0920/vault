@@ -1,4 +1,4 @@
-use crate::api::{ApiError, session_from_cookie};
+use crate::api::{session_from_cookie, ApiError};
 use crate::drive::OAuthToken;
 use crate::error::{Result, VaultError};
 use crate::manifest::validate_relative_path;
@@ -7,17 +7,19 @@ use crate::vault;
 use crate::AppState;
 use axum::extract::{Multipart, State};
 use axum::http::HeaderMap;
-use axum::{Json, Router, routing};
+use axum::{routing, Json, Router};
 use serde_json::{json, Value};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 pub fn routes() -> Router<AppState> {
-    Router::new()
-        .route("/api/v1/uploads", routing::post(upload_files))
+    Router::new().route("/api/v1/uploads", routing::post(upload_files))
 }
 
-fn require_token_and_key(state: &AppState, headers: &HeaderMap) -> Result<(OAuthToken, [u8; 32], String)> {
+fn require_token_and_key(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<(OAuthToken, [u8; 32], String)> {
     let session = session_from_cookie(headers, &state.sessions, &state.cfg)
         .ok_or_else(|| VaultError::Message("no session".into()))?;
     let token = session
@@ -69,7 +71,11 @@ async fn upload_files(
     let mut total_bytes: u64 = 0;
     let mut file_count: usize = 0;
 
-    while let Some(mut field) = multipart.next_field().await.map_err(|e| VaultError::Message(e.to_string()))? {
+    while let Some(mut field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| VaultError::Message(e.to_string()))?
+    {
         let Some(name) = field.file_name().map(str::to_string) else {
             continue;
         };
@@ -91,7 +97,11 @@ async fn upload_files(
         {
             let mut file = std::fs::File::create(&temp.path).map_err(VaultError::Io)?;
             let mut field_bytes: u64 = 0;
-            while let Some(chunk) = field.chunk().await.map_err(|e| VaultError::Message(e.to_string()))? {
+            while let Some(chunk) = field
+                .chunk()
+                .await
+                .map_err(|e| VaultError::Message(e.to_string()))?
+            {
                 field_bytes += chunk.len() as u64;
                 total_bytes += chunk.len() as u64;
                 if field_bytes > max_bytes || total_bytes > max_bytes {

@@ -9,7 +9,7 @@ use crate::error::VaultError;
 use crate::session::{Session, SessionStore};
 use crate::AppState;
 use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};

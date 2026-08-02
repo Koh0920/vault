@@ -1,12 +1,12 @@
-use crate::api::{ApiError, session_from_cookie, set_cookie_header};
+use crate::api::{session_from_cookie, set_cookie_header, ApiError};
+use crate::auth_key;
 use crate::drive;
 use crate::session::Session;
 use crate::AppState;
-use crate::auth_key;
 use axum::extract::{Query, State};
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Redirect};
-use axum::{Json, Router, routing};
+use axum::{routing, Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::time::SystemTime;
@@ -40,15 +40,18 @@ async fn oauth_start(
         vault_id: None,
         code_verifier: verifier,
         state: oauth_state,
-        expires_at: SystemTime::now() + std::time::Duration::from_secs(state.cfg.session_max_age_secs),
+        expires_at: SystemTime::now()
+            + std::time::Duration::from_secs(state.cfg.session_max_age_secs),
         connected: false,
     };
     state.sessions.put(session);
 
     let body = json!({ "ok": true, "url": url });
     let mut resp = axum::Json(body).into_response();
-    resp.headers_mut()
-        .insert("Set-Cookie", set_cookie_header(&id, &state).parse().unwrap());
+    resp.headers_mut().insert(
+        "Set-Cookie",
+        set_cookie_header(&id, &state).parse().unwrap(),
+    );
     let _ = _params;
     Ok(resp)
 }

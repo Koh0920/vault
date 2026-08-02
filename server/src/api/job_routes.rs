@@ -1,9 +1,9 @@
-use crate::api::{ApiError, session_from_cookie};
+use crate::api::{session_from_cookie, ApiError};
 use crate::error::{Result, VaultError};
 use crate::AppState;
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
-use axum::{Json, Router, routing};
+use axum::{routing, Json, Router};
 use serde_json::{json, Value};
 
 pub fn routes() -> Router<AppState> {
@@ -33,9 +33,10 @@ async fn job_status(
     headers: HeaderMap,
 ) -> std::result::Result<Json<Value>, ApiError> {
     let session = require_session(&state, &headers)?;
-    let job = state.jobs.get(&id, &session.id).ok_or_else(|| {
-        ApiError(VaultError::NotFound(format!("job {id}")))
-    })?;
+    let job = state
+        .jobs
+        .get(&id, &session.id)
+        .ok_or_else(|| ApiError(VaultError::NotFound(format!("job {id}"))))?;
     Ok(Json(json!(job)))
 }
 

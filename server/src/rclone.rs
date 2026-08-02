@@ -20,7 +20,11 @@ impl Rclone {
     pub fn for_session(cfg: &AppConfig, session_id: &str) -> Self {
         Rclone {
             binary: cfg.rclone_binary.clone(),
-            config: cfg.state_dir.join("rclone").join(session_id).join("rclone.conf"),
+            config: cfg
+                .state_dir
+                .join("rclone")
+                .join(session_id)
+                .join("rclone.conf"),
         }
     }
 
@@ -89,7 +93,12 @@ impl Rclone {
 
     /// Writes the crypt remote. `base` is the target inside the vault, e.g.
     /// `drive:Vault/cipher`. `password`/`password2` should already be obscure()'d.
-    pub fn write_crypt_remote(&self, remote_target: &str, password: &str, password2: &str) -> Result<()> {
+    pub fn write_crypt_remote(
+        &self,
+        remote_target: &str,
+        password: &str,
+        password2: &str,
+    ) -> Result<()> {
         self.write_section(
             DRIVE_CRYPT_REMOTE,
             &[

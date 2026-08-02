@@ -14,7 +14,11 @@ pub const MANIFEST_VERSION: u32 = 1;
 pub const VAULT_ROOT_DIR: &str = "Vault";
 pub const CIPHER_ROOT_DEFAULT: &str = "cipher";
 
-pub fn vault_manifest(vault_id: String, created_at: String, key_fingerprint: String) -> VaultManifest {
+pub fn vault_manifest(
+    vault_id: String,
+    created_at: String,
+    key_fingerprint: String,
+) -> VaultManifest {
     VaultManifest {
         schema_version: MANIFEST_VERSION,
         vault_id,
@@ -89,7 +93,10 @@ mod tests {
 
     #[test]
     fn join_paths() {
-        assert_eq!(join_remote_path("Vault/cipher/files", "a.txt"), "Vault/cipher/files/a.txt");
+        assert_eq!(
+            join_remote_path("Vault/cipher/files", "a.txt"),
+            "Vault/cipher/files/a.txt"
+        );
         assert_eq!(join_remote_path("Vault", ""), "Vault");
         assert_eq!(join_remote_path("", "x"), "x");
     }

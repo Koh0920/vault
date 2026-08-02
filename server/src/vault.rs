@@ -3,7 +3,7 @@ use crate::crypto;
 use crate::drive::OAuthToken;
 use crate::error::{err, Result, VaultError};
 use crate::manifest::{vault_manifest, VaultManifest};
-use crate::rclone::{self, DRIVE_REMOTE, Rclone};
+use crate::rclone::{self, Rclone, DRIVE_REMOTE};
 use crate::storage::{DriveStore, ObjectEntry};
 use serde::{Deserialize, Serialize};
 use time::format_description::well_known::Rfc3339;
@@ -164,7 +164,9 @@ pub async fn unlock_vault(
 ) -> Result<UnlockedVault> {
     let plain = connect_drive(cfg, token, session_id)?;
     let manifest: VaultManifest = plain.get_json(FILE_MANIFEST).await.map_err(|_| {
-        VaultError::NotFound("vault manifest not found on Drive; connect an existing vault first".into())
+        VaultError::NotFound(
+            "vault manifest not found on Drive; connect an existing vault first".into(),
+        )
     })?;
     let envelope: crypto::KeyEnvelope = plain.get_json(FILE_ENVELOPE).await?;
 
@@ -178,10 +180,17 @@ pub async fn unlock_vault(
 
     connect_crypt(cfg, &master_key, session_id)?;
 
-    Ok(UnlockedVault { manifest, master_key })
+    Ok(UnlockedVault {
+        manifest,
+        master_key,
+    })
 }
 
-pub async fn list_root(cfg: &AppConfig, master_key: &[u8], session_id: &str) -> Result<Vec<ObjectEntry>> {
+pub async fn list_root(
+    cfg: &AppConfig,
+    master_key: &[u8],
+    session_id: &str,
+) -> Result<Vec<ObjectEntry>> {
     connect_crypt(cfg, master_key, session_id)?;
     let store = DriveStore::new(session_rclone(cfg, session_id), true);
     store.list("").await

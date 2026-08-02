@@ -44,7 +44,9 @@ pub struct JobRegistry {
 
 impl Default for JobRegistry {
     fn default() -> Self {
-        JobRegistry { inner: Arc::new(Mutex::new(HashMap::new())) }
+        JobRegistry {
+            inner: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 }
 

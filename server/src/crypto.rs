@@ -98,10 +98,17 @@ pub fn wrap_master_key(master_key: &[u8], recovery_key: &[u8], aad: &[u8]) -> Re
     })
 }
 
-pub fn unwrap_master_key(envelope: &KeyEnvelope, recovery_key: &[u8], aad: &[u8]) -> Result<[u8; MASTER_KEY_LEN]> {
+pub fn unwrap_master_key(
+    envelope: &KeyEnvelope,
+    recovery_key: &[u8],
+    aad: &[u8],
+) -> Result<[u8; MASTER_KEY_LEN]> {
     // Strict structural validation before any decode/decrypt step.
     if envelope.schema_version != ENVELOPE_VERSION {
-        return err(format!("unsupported envelope version {}", envelope.schema_version));
+        return err(format!(
+            "unsupported envelope version {}",
+            envelope.schema_version
+        ));
     }
     if envelope.algorithm != "xchacha20-poly1305" {
         return err(format!("unsupported algorithm {}", envelope.algorithm));
@@ -139,7 +146,9 @@ pub fn unwrap_master_key(envelope: &KeyEnvelope, recovery_key: &[u8], aad: &[u8]
     let mut buffer = sealed;
     cipher
         .decrypt_in_place(XNonce::from_slice(&nonce), aad, &mut buffer)
-        .map_err(|_| VaultError::Crypto("failed to decrypt master key (wrong recovery key)".into()))?;
+        .map_err(|_| {
+            VaultError::Crypto("failed to decrypt master key (wrong recovery key)".into())
+        })?;
 
     envelope_key.zeroize();
 
