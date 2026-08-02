@@ -1,6 +1,5 @@
 use crate::config::AppConfig;
 use crate::error::{Result, VaultError};
-use crate::manifest::join_remote_path;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -184,10 +183,4 @@ pub fn crypt_spec(relative: &str) -> String {
 /// Unused helper retained for completeness; drive paths are resolved directly.
 pub fn drive_spec(path: &str) -> String {
     remote_spec(DRIVE_REMOTE, path)
-}
-
-/// Computes a path under the vault's cipher root. Kept for references but the
-/// plain store now resolves paths directly to avoid double-prefixing.
-pub fn cipher_root_path(relative: &str) -> String {
-    join_remote_path("Vault/cipher", relative)
 }
