@@ -7,12 +7,22 @@ default_target = "web"
 
 [targets.web]
 runtime = "oci"
-image = "ghcr.io/koh0920/vault:latest"
+# Pinned to a release tag, not :latest, for reproducibility. CI (release.yml)
+# builds this image, pushes it, and rewrites this field to an immutable
+# @sha256:... digest before a release is tagged.
+image = "ghcr.io/koh0920/vault:v0.1.0"
 port = 8080
 
 [network]
 expose = ["8080/tcp"]
 ingress = {}
+
+# Fail closed at launch: these must be injected as ordinary environment.
+required_env = [
+	"GOOGLE_CLIENT_ID",
+	"GOOGLE_CLIENT_SECRET",
+	"VAULT_COOKIE_SECRET",
+]
 
 [env]
 VAULT_LISTEN_ADDR = "0.0.0.0:8080"

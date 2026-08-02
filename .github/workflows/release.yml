@@ -1,0 +1,60 @@
+name: Release
+
+# On a vX.Y.Z tag, build the OCI image, push it to ghcr.io, and pin the
+# immutable @sha256:... digest into capsule.toml so the capsule revision is
+# reproducible (no :latest drift).
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  IMAGE: ghcr.io/koh0920/vault
+
+jobs:
+  build-and-pin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push (multi-arch)
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ github.ref_name }}
+            ${{ env.IMAGE }}:latest
+      - name: Pin digest into capsule.toml
+        run: |
+          digest="${{ steps.build.outputs.digest }}"
+          python3 - "$digest" <<'EOF'
+          import sys, re
+          digest = sys.argv[1]
+          image = "ghcr.io/koh0920/vault"
+          p = "capsule.toml"
+          s = open(p).read()
+          s = re.sub(r'image = "[^"]*"', f'image = "{image}@{digest}"', s, count=1)
+          open(p, "w").write(s)
+          EOF
+      - name: Commit pinned digest
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add capsule.toml
+          git commit -m "chore: pin capsule image digest ${{ steps.build.outputs.digest }}" || echo "no changes"
+          git push origin HEAD:main
