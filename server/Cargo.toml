@@ -1,0 +1,39 @@
+[package]
+name = "vault-server"
+version = "0.1.0"
+edition = "2021"
+description = "Standalone HTTP backend for the Vault encrypted backup app"
+
+[[bin]]
+name = "vault-server"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.7", features = ["multipart"] }
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.5", features = ["fs", "trace", "cors"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+rand = "0.8"
+sha2 = "0.10"
+hkdf = "0.12"
+hex = "0.4"
+chacha20poly1305 = "0.10"
+hmac = "0.12"
+rusqlite = { version = "0.32", features = ["bundled"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+time = { version = "0.3", features = ["formatting", "parsing"] }
+url = "2"
+dotenvy = "0.15"
+tempfile = "3"
+async-trait = "0.1"
+thiserror = "1"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+
+[workspace]
