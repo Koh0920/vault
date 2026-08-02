@@ -1,0 +1,6 @@
+server/target
+frontend/node_modules
+frontend/dist
+.state
+node_modules
+.git
