@@ -32,11 +32,36 @@ Browser (React) ── HTTP ──► Axum server (Rust) ── rclone ──►
 ## Key & recovery design
 
 - A **master key** is generated for the vault and wrapped into a **key
-  envelope** (HKDF-derived AEAD key) that is stored on Drive.
-- The **recovery key** is shown exactly once at vault creation, so it can be
-  exchanged for the master key later. It cannot be retrieved again.
-- Session cookies are HMAC-signed; `VAULT_COOKIE_SECRET` must be a long random
-  value in production.
+  envelope** (HKDF-derived XChaCha20-Poly1305 AEAD key) stored on Drive.
+- The envelope schema is strictly validated (version, algorithm, KDF, salt /
+  nonce / ciphertext lengths) before decryption, and the vault id is bound
+  into the AEAD as associated data so an envelope can't be replayed against a
+  different vault.
+- The **recovery key** is shown exactly once at vault creation and can be
+  exchanged for the master key later. It is persisted to IndexedDB for this
+  browser origin and can be downloaded as a recovery kit JSON for import on a
+  new device.
+- The master key's fingerprint is verified against the manifest on unlock.
+
+## Security model
+
+- **Session isolation** — every session owns its own rclone config
+  (`state/rclone/<session-id>/rclone.conf`), so parallel sessions can never
+  overwrite each other's Google OAuth token or crypt password. Disconnect
+  removes only the owning session's config. Jobs carry an owner and are only
+  visible/cancellable by their session.
+- **Path resolution** — plain reads/writes resolve directly to `drive:<path>`;
+  encrypted ops resolve into the crypt root `drive-crypt:<path>` (which maps to
+  `drive:Vault/cipher`). No implicit prefix is added, so metadata never lands
+  doubled under `Vault/cipher/Vault/...`.
+- **Session cookies** are HMAC-signed. Off loopback the server refuses to run
+  without a `VAULT_COOKIE_SECRET` of at least 32 bytes; `Secure` is set when
+  `VAULT_COOKIE_SECRET`/`VAULT_COOKIE_SECURE` indicate HTTPS. Expired sessions
+  are removed and their key material zeroized.
+- **Resource limits** — request body, per-upload bytes, file count, and preview
+  size are capped. Temp files are removed via RAII guards, and blocking rclone /
+  filesystem work runs on the blocking pool, not the async runtime.
+- There is no permissive CORS layer; the frontend is served same-origin.
 
 ## Development
 
