@@ -61,6 +61,7 @@ jobs:
           git commit -m "chore: pin capsule image digest ${{ steps.build.outputs.digest }}"
           # Re-point the release tag at the digest-pinned commit so the tag
           # itself references the pinned image, not the pre-build commit.
+          # Push only the ref for THIS tag (--tags would push every local tag).
           git tag -f "${{ github.ref_name }}"
-          git push origin --force --tags "${{ github.ref_name }}"
+          git push origin --force "refs/tags/${{ github.ref_name }}:refs/tags/${{ github.ref_name }}"
           git push origin HEAD:main

@@ -9,8 +9,8 @@ use axum::extract::{Multipart, State};
 use axum::http::HeaderMap;
 use axum::{routing, Json, Router};
 use serde_json::{json, Value};
-use std::io::Write;
 use std::path::{Path, PathBuf};
+use tokio::io::AsyncWriteExt;
 
 pub fn routes() -> Router<AppState> {
     Router::new().route("/api/v1/uploads", routing::post(upload_files))
@@ -40,8 +40,10 @@ struct TempFile {
 }
 
 impl TempFile {
-    fn create(dir: &Path) -> Result<Self> {
-        std::fs::create_dir_all(dir).map_err(VaultError::Io)?;
+    async fn create(dir: &Path) -> Result<Self> {
+        tokio::fs::create_dir_all(dir)
+            .await
+            .map_err(VaultError::Io)?;
         let path = dir.join(format!("{}-upload.tmp", uuid::Uuid::new_v4().simple()));
         Ok(TempFile { path })
     }
@@ -59,7 +61,14 @@ async fn upload_files(
     mut multipart: Multipart,
 ) -> std::result::Result<Json<Value>, ApiError> {
     let (_token, key, session_id) = require_token_and_key(&state, &headers)?;
-    vault::connect_crypt(&state.cfg, &key, &session_id)?;
+
+    // connect_crypt runs blocking rclone (obscure + config write); keep it off
+    // the async runtime.
+    let cfg = state.cfg.clone();
+    let session_id_connect = session_id.clone();
+    tokio::task::spawn_blocking(move || vault::connect_crypt(&cfg, &key, &session_id_connect))
+        .await
+        .map_err(|e| ApiError(VaultError::Message(format!("task join: {e}"))))??;
 
     let max_bytes = state.cfg.max_upload_bytes;
     let max_files = state.cfg.max_upload_files;
@@ -90,11 +99,13 @@ async fn upload_files(
             ))));
         }
 
-        // Stream the field into a temp file, enforcing the per-file / total limits
-        // and cleaning up on any error path via RAII.
-        let temp = TempFile::create(&temp_dir)?;
+        // Stream the field into a temp file with async writes, enforcing the
+        // per-file / total limits and cleaning up on any error path via RAII.
+        let temp = TempFile::create(&temp_dir).await?;
         {
-            let mut file = std::fs::File::create(&temp.path).map_err(VaultError::Io)?;
+            let mut file = tokio::fs::File::create(&temp.path)
+                .await
+                .map_err(VaultError::Io)?;
             let mut field_bytes: u64 = 0;
             while let Some(chunk) = field
                 .chunk()
@@ -108,9 +119,9 @@ async fn upload_files(
                         "upload exceeds {max_bytes} bytes limit"
                     ))));
                 }
-                file.write_all(&chunk).map_err(VaultError::Io)?;
+                file.write_all(&chunk).await.map_err(VaultError::Io)?;
             }
-            file.flush().map_err(VaultError::Io)?;
+            file.flush().await.map_err(VaultError::Io)?;
         }
 
         let dest_spec = crate::rclone::crypt_spec(&target);

@@ -13,6 +13,9 @@ pub const DRIVE_CRYPT_REMOTE: &str = "drive-crypt";
 pub struct Rclone {
     pub binary: PathBuf,
     pub config: PathBuf,
+    /// Optional working directory for spawned rclone processes. Used by tests
+    /// to isolate the local backend (which resolves paths relative to cwd).
+    pub workdir: Option<PathBuf>,
 }
 
 impl Rclone {
@@ -27,7 +30,14 @@ impl Rclone {
                 .join("rclone")
                 .join(session_id)
                 .join("rclone.conf"),
+            workdir: None,
         }
+    }
+
+    /// Sets the working directory for spawned rclone processes (test support).
+    pub fn with_workdir(mut self, dir: PathBuf) -> Self {
+        self.workdir = Some(dir);
+        self
     }
 
     pub fn config_dir(&self) -> &Path {
@@ -67,10 +77,12 @@ impl Rclone {
 
     pub fn run(&self, args: &[String]) -> Result<Vec<u8>> {
         let config = self.ensure_config()?;
-        let output = Command::new(&self.binary)
-            .arg("--config")
-            .arg(&config)
-            .args(args)
+        let mut cmd = Command::new(&self.binary);
+        cmd.arg("--config").arg(&config).args(args);
+        if let Some(dir) = &self.workdir {
+            cmd.current_dir(dir);
+        }
+        let output = cmd
             .output()
             .map_err(|e| VaultError::Rclone(format!("failed to run rclone: {e}")))?;
 
