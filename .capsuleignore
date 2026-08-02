@@ -2,4 +2,7 @@
 .gitignore
 .DS_Store
 src-tauri/target
-
+server/target
+frontend/dist
+frontend/node_modules
+node_modules
