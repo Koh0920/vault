@@ -221,8 +221,16 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let dir_mode = std::fs::metadata(rclone.config_dir()).unwrap().permissions().mode() & 0o777;
-            let file_mode = std::fs::metadata(&rclone.config).unwrap().permissions().mode() & 0o777;
+            let dir_mode = std::fs::metadata(rclone.config_dir())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            let file_mode = std::fs::metadata(&rclone.config)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
             assert_eq!(dir_mode, 0o700, "config dir must be 0700");
             assert_eq!(file_mode, 0o600, "config file must be 0600");
         }
