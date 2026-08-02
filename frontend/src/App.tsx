@@ -1,291 +1,402 @@
-import { useEffect, useMemo, useRef } from "react";
-import { AppShell } from "./components/AppShell";
-import { JobBar } from "./components/JobBar";
-import { ToastLayer } from "./components/ToastLayer";
-import { AppProvider, useAppDispatch, useAppState, useToastActions } from "./context/AppContext";
-import { useExplorer } from "./hooks/useExplorer";
-import { useJobPolling } from "./hooks/useJobPolling";
-import { useProviders } from "./hooks/useProviders";
-import { createBackupBridge } from "./lib/bridge";
-import { historyJobs } from "./lib/format";
-import { ConnectionsView } from "./views/ConnectionsView";
-import { DashboardView } from "./views/DashboardView";
-import { ExplorerView } from "./views/ExplorerView";
-import { HistoryView } from "./views/HistoryView";
-import { SettingsView } from "./views/SettingsView";
-import { WizardView } from "./views/WizardView";
+import React, { useCallback, useEffect, useState } from "react";
+import { api } from "./lib/api";
+import { formatBytes, formatTime } from "./lib/format";
+import type { JobStatus, ObjectEntry, VaultStatus } from "./types";
+import "./styles.css";
 
-const bridge = createBackupBridge();
-
-function basename(path: string): string {
-  const normalized = path.replace(/\\/g, "/").replace(/\/+$/, "");
-  const parts = normalized.split("/");
-  return parts[parts.length - 1] || normalized;
-}
-
-function AppInner() {
-  const state = useAppState();
-  const dispatch = useAppDispatch();
-  const toast = useToastActions();
-  const bootedRef = useRef(false);
-
-  const jobPolling = useJobPolling(bridge, {
-    onUploadDone: () => {
-      void explorer.loadIndex();
-    },
-    onPreviewUpdate: (job) => {
-      if (job.kind === "preview" && (job.phase === "done" || job.phase === "failed")) {
-        explorer.handlePreviewJob(job.jobId, job.phase, job.result, job.error);
-      }
-    },
-  });
-  const providers = useProviders(bridge);
-  const explorer = useExplorer(bridge, jobPolling.watchJob);
-
-  useEffect(() => {
-    if (bootedRef.current) return;
-    bootedRef.current = true;
-    async function boot() {
-      dispatch({ type: "set-bridge-ready", ready: bridge.hasBridge() });
-      if (!bridge.hasBridge()) return;
-
-      try {
-        const runtimeConfig = await bridge.getRuntimeConfig();
-        dispatch({ type: "set-runtime-config", runtimeConfig });
-      } catch {
-        dispatch({ type: "set-runtime-config", runtimeConfig: null });
-      }
-
-      await providers.loadStatuses();
-      await jobPolling.loadJobs().catch(() => {});
-      await explorer.loadIndex().catch(() => {});
-    }
-    void boot();
-  }, []);
-
-  const runningJob = useMemo(() => {
-    const jobs = historyJobs(state.jobsById, state.jobOrder);
-    return jobs.find((job) => job.phase === "running") ?? null;
-  }, [state.jobOrder, state.jobsById]);
-
-  const renderedHistory = useMemo(
-    () => historyJobs(state.jobsById, state.jobOrder),
-    [state.jobOrder, state.jobsById],
-  );
-
-  async function startBackup() {
-    const sourcePaths = Array.from(
-      new Set(state.wizard.sourcePaths.map((path) => path.trim()).filter(Boolean)),
-    );
-
-    if (!sourcePaths.length) {
-      toast.push("バックアップ対象を1件以上選択してください", "err");
-      return;
-    }
-    if (!state.wizard.password.trim()) {
-      toast.push("暗号化パスワードを入力してください", "err");
-      return;
-    }
-
-    const duplicateNames = sourcePaths.reduce<Record<string, number>>((accumulator, path) => {
-      const name = basename(path);
-      accumulator[name] = (accumulator[name] ?? 0) + 1;
-      return accumulator;
-    }, {});
-    const collisions = Object.entries(duplicateNames)
-      .filter(([, count]) => count > 1)
-      .map(([name]) => name);
-    if (collisions.length) {
-      toast.push(`同名の項目は同時にアップロードできません: ${collisions.join(", ")}`, "err");
-      return;
-    }
-
-    dispatch({ type: "patch-wizard", patch: { submitting: true } });
-    try {
-      const suffix = state.runtimeConfig?.defaultCryptRemoteSuffix ?? "-crypt";
-      const crypt = await bridge.createCryptRemote(
-        state.wizard.baseRemote,
-        suffix,
-        state.wizard.remotePath,
-        state.wizard.password,
-      );
-      if (!crypt.ok) throw new Error("crypt remote の作成に失敗しました");
-
-      const startedJobs = [];
-      const startErrors: string[] = [];
-      for (const sourcePath of sourcePaths) {
-        try {
-          const upload = await bridge.startUpload(
-            sourcePath,
-            crypt.cryptRemote,
-            state.wizard.remotePath,
-            "copy",
-          );
-          startedJobs.push({
-            jobId: upload.jobId,
-            executeId: upload.executeId,
-            kind: "upload" as const,
-            phase: "running" as const,
-            progress: {
-              bytesDone: 0,
-              bytesTotal: null,
-              speed: null,
-              eta: null,
-              currentFile: sourcePath,
-              transfers: null,
-            },
-            error: null,
-            result: null,
-            startedAt: new Date().toISOString(),
-            finishedAt: null,
-          });
-        } catch (error) {
-          startErrors.push(`${sourcePath}: ${String(error)}`);
-        }
-      }
-
-      if (!startedJobs.length) {
-        throw new Error(startErrors.join("\n"));
-      }
-
-      dispatch({
-        type: "upsert-jobs",
-        jobs: startedJobs,
-      });
-      startedJobs.forEach((job) => {
-        jobPolling.watchJob(job.jobId);
-      });
-      dispatch({ type: "set-view", view: "dashboard" });
-      toast.push(`${startedJobs.length} 件のバックアップを開始しました`);
-      if (startErrors.length) {
-        toast.push(`${startErrors.length} 件の開始に失敗しました`, "err");
-      }
-    } catch (error) {
-      toast.push(String(error), "err");
-    } finally {
-      dispatch({ type: "patch-wizard", patch: { submitting: false } });
-    }
-  }
-
-  function mergeSources(paths: string[]) {
-    const merged = Array.from(
-      new Set([...state.wizard.sourcePaths, ...paths.map((path) => path.trim()).filter(Boolean)]),
-    );
-    dispatch({ type: "patch-wizard", patch: { sourcePaths: merged } });
-  }
-
-  async function pickFolders() {
-    try {
-      const result = await bridge.pickFolders();
-      if (!result.paths.length) return;
-      mergeSources(result.paths);
-    } catch (error) {
-      toast.push(`フォルダ選択に失敗しました: ${String(error)}`, "err");
-    }
-  }
-
-  async function pickFiles() {
-    try {
-      const result = await bridge.pickFiles();
-      if (!result.paths.length) return;
-      mergeSources(result.paths);
-    } catch (error) {
-      toast.push(`ファイル選択に失敗しました: ${String(error)}`, "err");
-    }
-  }
-
-  function removeSource(path: string) {
-    dispatch({
-      type: "patch-wizard",
-      patch: { sourcePaths: state.wizard.sourcePaths.filter((item) => item !== path) },
-    });
-  }
-
-  function clearSources() {
-    dispatch({ type: "patch-wizard", patch: { sourcePaths: [] } });
-  }
-
-  const connectedCount = Object.values(state.providers).filter((provider) => provider.status === "connected").length;
-
-  return (
-    <>
-      <AppShell
-        currentView={state.view}
-        connectedCount={connectedCount}
-        bridgeReady={state.bridgeReady}
-        onChangeView={(view) => dispatch({ type: "set-view", view })}
-      >
-        {state.view === "dashboard" ? (
-          <DashboardView
-            providers={state.providers}
-            onConnect={providers.connect}
-            onStartBackup={() => {
-              dispatch({ type: "set-view", view: "wizard" });
-              dispatch({ type: "patch-wizard", patch: { step: 1 } });
-            }}
-          />
-        ) : null}
-
-        {state.view === "remotes" ? (
-          <ConnectionsView providers={state.providers} onConnect={providers.connect} />
-        ) : null}
-
-        {state.view === "history" ? (
-          <HistoryView jobs={renderedHistory} />
-        ) : null}
-
-        {state.view === "explorer" ? (
-          <ExplorerView
-            explorer={state.explorer}
-            providerUploads={explorer.providerUploads()}
-            selectedUpload={explorer.selectedUpload()}
-            onProviderChange={(provider) => void explorer.setProvider(provider)}
-            onModeChange={(mode) => void explorer.setMode(mode)}
-            onRefresh={() => void explorer.refresh()}
-            onSelectUpload={(uploadId) => void explorer.selectUpload(uploadId)}
-            onBreadcrumb={(path) => void explorer.openDirectory(path)}
-            onUp={() => void explorer.goUp()}
-            onQueryChange={(query) => void explorer.setQuery(query)}
-            onPage={(direction) => void explorer.goPage(direction)}
-            onOpenDirectory={(path) => void explorer.openDirectory(path)}
-            onPreview={(path) => void explorer.startPreview(path)}
-            onDownload={(path) => void explorer.startDownload(path)}
-            onTogglePreviewMeta={explorer.togglePreviewMeta}
-          />
-        ) : null}
-
-        {state.view === "wizard" ? (
-          <WizardView
-            wizard={state.wizard}
-            providers={state.providers}
-            onBackToDashboard={() => dispatch({ type: "set-view", view: "dashboard" })}
-            onPatch={(patch) => dispatch({ type: "patch-wizard", patch })}
-            onSubmit={() => void startBackup()}
-            onPickFolders={() => void pickFolders()}
-            onPickFiles={() => void pickFiles()}
-            onRemoveSource={removeSource}
-            onClearSources={clearSources}
-          />
-        ) : null}
-
-        {state.view === "settings" ? (
-          <SettingsView
-            appState={state}
-            onToggleDebug={() => dispatch({ type: "set-debug-open", open: !state.debugOpen })}
-          />
-        ) : null}
-      </AppShell>
-
-      <JobBar job={runningJob} />
-      <ToastLayer toasts={state.toasts} />
-    </>
-  );
-}
+type Phase = "onboarding" | "locked" | "connected";
 
 export default function App() {
+  const [phase, setPhase] = useState<Phase>("onboarding");
+  const [banner, setBanner] = useState<string | null>(null);
+  const [vault, setVault] = useState<VaultStatus | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      const drive = await api.driveStatus();
+      if (!drive.connected) {
+        setPhase("onboarding");
+        return;
+      }
+      try {
+        const v = await api.vaultStatus();
+        setVault(v);
+        setPhase(v.initialized === true ? "connected" : "locked");
+      } catch {
+        setVault(null);
+        setPhase("locked");
+      }
+    } catch {
+      setPhase("onboarding");
+    }
+  }, []);
+
+  useEffect(() => {
+    refresh();
+    const params = new URLSearchParams(window.location.search);
+    const d = params.get("drive");
+    if (d === "connected") setBanner("Google Drive connected.");
+    if (d === "error") setBanner(`Connection failed: ${params.get("reason") ?? "unknown"}`);
+    if (params.has("drive")) window.history.replaceState({}, "", "/");
+  }, [refresh]);
+
   return (
-    <AppProvider>
-      <AppInner />
-    </AppProvider>
+    <div className="app">
+      <div className="brand">
+        <div className="brand-mark">◆</div>
+        <div>
+          <h1>Vault</h1>
+          <p>Encrypted Google Drive backup</p>
+        </div>
+      </div>
+
+      {banner && (
+        <div className="banner">
+          <span>{banner}</span>
+          <button className="banner-dismiss" onClick={() => setBanner(null)}>
+            ✕
+          </button>
+        </div>
+      )}
+
+      {phase === "onboarding" && <Onboarding onConnected={refresh} />}
+      {phase === "locked" && (
+        <Locked vault={vault} onUnlocked={refresh} onDisconnect={refresh} />
+      )}
+      {phase === "connected" && <Connected onDisconnect={refresh} />}
+    </div>
+  );
+}
+
+function Onboarding({ onConnected }: { onConnected: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function connect() {
+    setBusy(true);
+    setErr(null);
+    try {
+      const url = await api.startDrive();
+      window.location.href = url;
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+    setBusy(false);
+  }
+
+  return (
+    <div className="panel center">
+      <h2>Connect Google Drive</h2>
+      <p>
+        Vault stores your files encrypted on your own Google Drive. Connect to
+        continue.
+      </p>
+      <button className="btn" onClick={connect} disabled={busy}>
+        {busy ? "Opening Google…" : "Connect Google Drive"}
+      </button>
+      {err && <p className="error-text">{err}</p>}
+    </div>
+  );
+}
+
+function Locked({
+  vault,
+  onUnlocked,
+  onDisconnect,
+}: {
+  vault: VaultStatus | null;
+  onUnlocked: () => void;
+  onDisconnect: () => void;
+}) {
+  const [recoveryKey, setRecoveryKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [revealed, setRevealed] = useState<string | null>(null);
+
+  async function create() {
+    setBusy(true);
+    setErr(null);
+    try {
+      const resp = await api.initialize();
+      setRevealed(resp.recoveryKey);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+    setBusy(false);
+  }
+
+  async function unlock() {
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.unlock(recoveryKey.trim());
+      onUnlocked();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+    setBusy(false);
+  }
+
+  return (
+    <div className="panel center">
+      <h2>{vault?.initialized ? "Unlock your Vault" : "Create your Vault"}</h2>
+
+      {vault?.initialized ? (
+        <>
+          <p>Enter your recovery key to unlock this Vault.</p>
+          <input
+            className="input mono"
+            type="password"
+            placeholder="Recovery key"
+            value={recoveryKey}
+            onChange={(e) => setRecoveryKey(e.target.value)}
+          />
+          <button className="btn" onClick={unlock} disabled={busy || !recoveryKey.trim()}>
+            {busy ? "Unlocking…" : "Unlock"}
+          </button>
+        </>
+      ) : !revealed ? (
+        <>
+          <p>Create a new encrypted Vault.</p>
+          <button className="btn" onClick={create} disabled={busy}>
+            {busy ? "Creating…" : "Create Vault"}
+          </button>
+        </>
+      ) : (
+        <div className="recovery-box">
+          <h3>Your Recovery Key</h3>
+          <p className="warn">Save this now — it cannot be retrieved again.</p>
+          <code className="recovery">{revealed}</code>
+          <div className="row">
+            <button className="btn" onClick={() => navigator.clipboard.writeText(revealed)}>
+              Copy
+            </button>
+            <button className="btn ghost" onClick={() => setRevealed(null)}>
+              Done
+            </button>
+          </div>
+        </div>
+      )}
+
+      {err && <p className="error-text">{err}</p>}
+      <button className="link ghost" onClick={onDisconnect}>
+        Disconnect Drive
+      </button>
+    </div>
+  );
+}
+
+function Connected({ onDisconnect }: { onDisconnect: () => void }) {
+  const [entries, setEntries] = useState<ObjectEntry[]>([]);
+  const [path, setPath] = useState("");
+  const [jobs, setJobs] = useState<JobStatus[]>([]);
+  const [err, setErr] = useState<string | null>(null);
+  const [preview, setPreview] = useState<{ name: string; content: string } | null>(null);
+  const [fileInput, setFileInput] = useState<HTMLInputElement | null>(null);
+
+  const reload = useCallback(async () => {
+    setErr(null);
+    try {
+      const [files, j] = await Promise.all([api.listFiles(path), api.listJobs()]);
+      setEntries(files.entries);
+      setJobs(j.jobs);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  }, [path]);
+
+  useEffect(() => {
+    reload();
+  }, [reload]);
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      api.listJobs().then((r) => setJobs(r.jobs)).catch(() => {});
+    }, 2000);
+    return () => clearInterval(id);
+  }, []);
+
+  async function openDir(entry: ObjectEntry) {
+    if (!entry.isDir) return;
+    setPath(path ? `${path}/${entry.name}` : entry.name);
+  }
+
+  async function previewFile(entry: ObjectEntry) {
+    if (entry.isDir) return;
+    try {
+      const full = path ? `${path}/${entry.name}` : entry.name;
+      const resp = await api.preview(full);
+      setPreview({
+        name: entry.name,
+        content: resp.text ?? "(binary file — no text preview)",
+      });
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function onUpload(files: FileList | null) {
+    if (!files || files.length === 0) return;
+    try {
+      const results = await api.uploadFiles(Array.from(files), path);
+      const failed = results.filter((r) => !r.ok);
+      if (failed.length) setErr(`${failed.length} file(s) failed to upload.`);
+      reload();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+    if (fileInput) fileInput.value = "";
+  }
+
+  return (
+    <div className="workspace">
+      <div className="topbar">
+        <Breadcrumbs path={path} onNavigate={setPath} />
+        <div className="topbar-actions">
+          <label className="btn">
+            Upload
+            <input
+              ref={(el) => setFileInput(el)}
+              type="file"
+              multiple
+              hidden
+              onChange={(e) => onUpload(e.target.files)}
+            />
+          </label>
+          <button className="btn ghost" onClick={onDisconnect}>
+            Disconnect
+          </button>
+        </div>
+      </div>
+
+      {err && <div className="error-text pad">{err}</div>}
+
+      <section className="explorer">
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Type</th>
+              <th>Size</th>
+              <th>Modified</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {entries.map((entry) => (
+              <tr key={entry.path}>
+                <td>
+                  <button
+                    className="file-link"
+                    onClick={() => (entry.isDir ? openDir(entry) : previewFile(entry))}
+                  >
+                    <span className={entry.isDir ? "kind-dir" : "kind-file"}>
+                      {entry.isDir ? "▸" : "·"}
+                    </span>
+                    {entry.name}
+                  </button>
+                </td>
+                <td className="muted">{entry.isDir ? "folder" : entry.mimeType ?? "file"}</td>
+                <td className="muted">{entry.isDir ? "—" : formatBytes(entry.size)}</td>
+                <td className="muted">{entry.modTime ? formatTime(entry.modTime) : "—"}</td>
+                <td className="row-actions">
+                  {entry.isDir && (
+                    <button className="tiny" onClick={() => openDir(entry)}>
+                      open
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+            {entries.length === 0 && (
+              <tr>
+                <td colSpan={5} className="empty">
+                  This folder is empty.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </section>
+
+      {preview && <PreviewModal preview={preview} onClose={() => setPreview(null)} />}
+
+      <section className="jobs">
+        <h3>Uploads</h3>
+        {jobs.length === 0 && <p className="muted pad">No uploads recorded.</p>}
+        <ul>
+          {jobs.map((job) => (
+            <li key={job.jobId}>
+              <div className="job-row">
+                <span className="job-name">{job.kind}</span>
+                <span className={`badge ${job.phase}`}>{job.phase}</span>
+                {job.error && <span className="muted">{job.error}</span>}
+              </div>
+              {job.phase === "running" && (
+                <div className="job-progress">
+                  <span>{formatBytes(job.progress.bytesDone)} transferred</span>
+                  <button className="mini" onClick={() => api.cancelJob(job.jobId).catch(() => {})}>
+                    cancel
+                  </button>
+                </div>
+              )}
+            </li>
+          ))}
+        </ul>
+      </section>
+    </div>
+  );
+}
+
+function Breadcrumbs({
+  path,
+  onNavigate,
+}: {
+  path: string;
+  onNavigate: (path: string) => void;
+}) {
+  const segs = path ? path.split("/") : [];
+  return (
+    <div className="crumbs">
+      <button className={path === "" ? "crumb active" : "crumb"} onClick={() => onNavigate("")}>
+        Vault
+      </button>
+      {segs.map((seg, i) => {
+        const full = segs.slice(0, i + 1).join("/");
+        return (
+          <span key={i}>
+            <span className="sep">/</span>
+            <button
+              className={full === path ? "crumb active" : "crumb"}
+              onClick={() => onNavigate(full)}
+            >
+              {seg}
+            </button>
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+function PreviewModal({
+  preview,
+  onClose,
+}: {
+  preview: { name: string; content: string };
+  onClose: () => void;
+}) {
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <strong>{preview.name}</strong>
+          <button className="tiny" onClick={onClose}>
+            ✕
+          </button>
+        </div>
+        <pre className="modal-pre">{preview.content}</pre>
+      </div>
+    </div>
   );
 }
