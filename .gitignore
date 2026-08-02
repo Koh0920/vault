@@ -1,6 +1,4 @@
 node_modules/
 .state/
 frontend/dist/
-src-tauri/target/
-src-tauri/.env
 .DS_Store

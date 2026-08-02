@@ -1,232 +1,127 @@
-# BYOK Encrypted R2 Drop
+# Vault — Encrypted Backup to Google Drive
 
-このサンプルは、レビューを反映して技術スタックを `browser + presign broker` から `Tauri + rclone sidecar + crypt + RC API` に更新した設計メモです。
+Vault is a standalone, local-first web application that backs up files to your
+own Google Drive, encrypted with `rclone crypt`. It is a single Axum HTTP
+server (Rust) that serves a React frontend and talks to an rclone binary with
+a `crypt` remote.
 
-対象は `cloud-first web app` ではなく、`local-first multi-backend backup capsule` です。Google Drive、R2、Backblaze などを同じ操作面で扱いながら、暗号化と大容量転送をローカル側に閉じ込めることを主目的にします。
+The restore key is a recovery key derived strictly from your master key and
+held only on the server / your session, so the encrypted contents are
+unreadable to any service other than you.
 
-## 採用モデル
+## Architecture
 
-- UI は HTML + TypeScript で構成する
-- デスクトップ shell は Tauri を使う
-- 転送エンジンは `rclone + crypt` を sidecar として同梱する
-- rclone の制御は stdout parse ではなく RC API を優先する
-- UI と backend の通信は localhost HTTP ではなく Tauri `invoke` / `event` を使う
-- Google Drive OAuth や各種 backend credential は browser に渡さず、ローカルの rclone config に閉じ込める
-
-## なぜこの構成か
-
-この用途では、browser 単体で大容量暗号化アップロードを再実装するより、`rclone + crypt` の既存の強みをそのまま使う方が圧倒的に楽です。
-
-主な理由は次の通りです。
-
-1. Google Drive backend が成熟している
-2. `crypt` でファイル名と内容の両方を暗号化できる
-3. 10GB 級でも browser memory に載せずに済む
-4. retry、resume、filter、sync を既存機能でまかなえる
-5. 同じ backend を CLI / desktop / 将来の guest UI でも共有しやすい
-
-## 破棄した案
-
-- `browser + aws-sdk + presign broker` を本命にする
-  - R2 first ならよいが、Google Drive 対応まで含めると backend ごとの差が大きい
-  - OAuth、resume、filter、sync を個別実装するコストが高い
-- `stdout/stderr` の progress parse で rclone を薄く包む
-  - 最初は動くが、進捗、cancel、再試行、job 管理が脆い
-- Electron shell
-  - Node フル権限で重く、配布サイズも大きい
-  - この用途では Tauri の方が軽く、sidecar 前提と相性がよい
-
-## 更新後の技術スタック
-
-### Frontend
-
-- HTML
-- TypeScript
-- Vite
-- 必要なら Tailwind
-
-### Desktop Shell
-
-- Tauri
-- Rust command layer
-- Tauri event stream for progress
-
-### Transfer Engine
-
-- `rclone`
-- `crypt` remote
-- `rcd` mode with RC API
-
-### Local Persistence
-
-- app 専用 `rclone.conf`
-- OS keychain で機密値保護
-- ジョブ履歴は SQLite か軽量 JSON store
-
-## システム構成
-
-### 1. Tauri Frontend
-
-役割:
-
-- バックアップ元の選択
-- 保存先 provider の選択
-- crypt password の入力
-- ジョブ開始
-- 進捗、速度、残り時間、失敗の表示
-
-### 2. Tauri Backend
-
-役割:
-
-- sidecar として `rclone` を起動
-- `rclone rcd` の lifecycle を管理
-- RC API を叩く薄い wrapper を提供
-- config path と keychain を管理
-- フロントへ progress event を流す
-
-### 3. rclone Sidecar
-
-役割:
-
-- Google Drive / R2 / Backblaze 等への転送
-- `crypt` による暗号化
-- multipart / resume / retry
-- backend ごとの OAuth / token refresh
-
-## アップロード手順
-
-1. Tauri UI で source path と destination remote を選ぶ
-2. 初回のみ provider 接続を作る
-3. backend が app 専用 `rclone.conf` を用意する
-4. backend が `crypt` remote を生成する
-5. backend が `rclone rcd` を sidecar 起動する
-6. UI が `startUpload` を呼ぶ
-7. backend が RC API で `sync/copy` を `_async=true` で開始する
-8. backend が `job/status` と `core/stats` を poll する
-9. backend が Tauri event で progress をフロントへ送る
-10. UI が完了 / 失敗 / cancel を表示する
-
-## 推奨 API 面
-
-UI から見える API は 5 個程度に絞るのがよいです。
-
-### `getProviders()`
-
-返すもの:
-
-- 対応 backend 一覧
-- `drive`, `r2`, `b2` など
-
-### `connectProvider(provider)`
-
-役割:
-
-- OAuth backend の初回接続
-- browser launch と callback 受け
-- app 専用 `rclone.conf` への保存
-
-### `createCryptRemote(request)`
-
-役割:
-
-- 平 remote を元に `crypt` remote を生成
-- password は config 平文保存ではなく runtime 注入を優先
-
-### `startUpload(request)`
-
-```ts
- type StartUploadRequest = {
-   sourcePath: string;
-   remoteName: string;
-   remotePath: string;
-   mode: "copy" | "sync";
- };
- 
- type StartUploadResponse = {
-   jobId: string;
-   executeId?: string;
- };
+```
+Browser (React) ── HTTP ──► Axum server (Rust) ── rclone ──► Google Drive
+                              │  crypto: HKDF + XChaCha20-Poly1305 envelopes
+                              │  key envelope + recovery key
+                              └  session cookie (HMAC-signed)
 ```
 
-### `getJobStatus(jobId)`
+- **Frontend** — `frontend/` (Vite + React + TypeScript); talks only to the
+  local HTTP API over `fetch`.
+- **Backend** — `server/` (Rust, Axum); owns sessions, the key envelope, the
+  recovery key, and rclone invocation. Files are streamed to temp and then into
+  the crypt remote; they are never held fully in memory.
+- **Transfer** — rclone `crypt` remote over Google Drive. File contents and
+  names are both encrypted.
+- **Packaging** — multi-stage `Dockerfile` bundles the server, the built
+  frontend, and rclone. `capsule.toml` exposes it as an OCI web capsule on
+  port 8080.
 
-```ts
- type JobStatus = {
-   jobId: string;
-   executeId?: string;
-   phase: "preparing" | "running" | "verifying" | "done" | "failed";
-   progress?: {
-     bytesDone: number;
-     bytesTotal?: number;
-     speed?: number;
-     eta?: number;
-     currentFile?: string;
-     transfers?: number;
-   };
-   error?: string;
- };
+## Key & recovery design
+
+- A **master key** is generated for the vault and wrapped into a **key
+  envelope** (HKDF-derived AEAD key) that is stored on Drive.
+- The **recovery key** is shown exactly once at vault creation, so it can be
+  exchanged for the master key later. It cannot be retrieved again.
+- Session cookies are HMAC-signed; `VAULT_COOKIE_SECRET` must be a long random
+  value in production.
+
+## Development
+
+Prerequisites: Rust (stable), Node 20+, and `rclone` on the `PATH`.
+
+Create a Google OAuth Desktop/Web app with a redirect URI of
+`http://localhost:8080/api/v1/drive/oauth/callback`, then:
+
+```bash
+cp .env.example .env        # fill in GOOGLE_CLIENT_ID / SECRET
+cd server && cargo run      # backend on :8080, serves ./frontend/dist
 ```
 
-## RC API を優先する理由
+In a second terminal, for hot reload:
 
-`rclone copy --progress` のログ parse は避けた方がよいです。RC API なら JSON で job を扱えるので、次が楽になります。
+```bash
+npm install && npm run dev  # vite dev server on :1420, proxies /api to :8080
+```
 
-- `job/list`
-- `job/status`
-- `core/stats`
-- `job/stop`
-- backend 再起動後の復元
+### Test / lint
 
-このため、thin wrapper は `subprocess wrapper` ではなく `RC bridge` として作る方がよいです。
+```bash
+cd server
+cargo fmt --all
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test
+```
 
-## config / secret 管理
+```bash
+npm run build && npx tsc --noEmit
+```
 
-- `~/.config/rclone/rclone.conf` は触らず、アプリ専用 config を使う
-- 常に `--config <app-specific-path>` を付ける
-- `crypt` password は可能なら keychain 保持、最低でも runtime 注入に留める
-- Google Drive token は rclone が管理し、フロントエンドに露出させない
+## Docker
 
-## MVP の責務
+```bash
+docker build -t vault .
+docker run --rm -p 8080:8080 \
+  -v vault-data:/data \
+  -e GOOGLE_CLIENT_ID=... \
+  -e GOOGLE_CLIENT_SECRET=... \
+  -e GOOGLE_REDIRECT_URI=http://localhost:8080/api/v1/drive/oauth/callback \
+  -e VAULT_COOKIE_SECRET=$(openssl rand -hex 32) \
+  vault
+# open http://localhost:8080
+```
 
-- 1 ファイル 10GB までを許容する
-- Google Drive と R2 を最初の backend にする
-- `copy` と `sync` をサポートする
-- include / exclude は簡易入力だけ提供する
-- ジョブ履歴はローカル保存のみにする
+## Environment variables
 
-## セキュリティ境界
+See `.env.example`. Notable keys:
 
-- frontend は filesystem / credential に直接触らない
-- backend のみが `rclone.conf` と keychain に触る
-- 転送はすべて sidecar だけが行う
-- `crypt` の暗号化対象はファイル内容と名前の両方
-- OAuth token は browser に渡さない
+| Variable | Description |
+| --- | --- |
+| `VAULT_LISTEN_ADDR` | Bind address, default `0.0.0.0:8080` |
+| `VAULT_FRONTEND_DIR` | Built frontend directory, default `../frontend/dist` |
+| `VAULT_STATE_DIR` | Persistent state (rclone config, metadata) |
+| `VAULT_TEMP_DIR` | Temp dir for streaming uploads |
+| `RCLONE_BINARY` | Path/name of the rclone binary |
+| `GOOGLE_CLIENT_ID` | Google OAuth client id |
+| `GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
+| `GOOGLE_REDIRECT_URI` | OAuth redirect (must match the app config) |
+| `VAULT_COOKIE_SECRET` | HMAC secret for session cookies |
 
-## 運用上の注意
+## HTTP API
 
-- macOS builds では `src-tauri/tauri.macos.conf.json` で `src-tauri/bin/rclone-<target-triple>` を sidecar として同梱する
-- backend は起動ディレクトリにある bundled launcher を優先し、見つからない場合は `RCLONE_SIDECAR_NAME` で指定した名前を `PATH` から解決する
-- Tauri bundle に `rclone` launcher を arch ごとに含める
-- sidecar バージョンを固定する
-- RC API は localhost 固定で、認証を有効にする
-- ジョブ状態は stdout parse ではなく RC stats を正とする
-- app data 配下に config と log を分ける
+All routes are under `/api/v1` and use a same-origin session cookie.
 
-## 将来拡張
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/api/v1/runtime` | Public runtime config |
+| GET | `/api/v1/drive/status` | Public Drive connection status |
+| GET | `/api/v1/drive/oauth/start` | Begin Drive OAuth (sets session cookie) |
+| GET | `/api/v1/drive/oauth/callback` | OAuth callback (server-side exchange) |
+| POST | `/api/v1/drive/disconnect` | Drop Drive credentials |
+| GET | `/api/v1/vault` | Vault status (exists / initialized) |
+| POST | `/api/v1/vault/initialize` | Create vault, returns recovery key |
+| POST | `/api/v1/vault/unlock` | Unlock with recovery key |
+| GET | `/api/v1/files?path=` | List encrypted files in a folder |
+| POST | `/api/v1/files/preview?path=` | Preview a text file |
+| POST | `/api/v1/uploads` | Multipart upload, encrypted to vault |
+| GET | `/api/v1/jobs` | List upload jobs |
+| GET | `/api/v1/jobs/:id` | Single job status |
+| POST | `/api/v1/jobs/:id/cancel` | Cancel a running job |
 
-- 同じ core を CLI カプセルへ共有
-- guest UI から desktop host bridge 経由で操作
-- backend 追加
-  - S3
-  - Dropbox
-  - OneDrive
-- backup profile 保存
-- schedule 実行
-- restore 導線
+## Notes
 
-## 結論
-
-このカプセルの本命は `html frontend + rclone + crypt` ですが、実装形としては `Tauri + rclone sidecar + RC API` が最もよいです。
-
-つまり、見た目は HTML frontend、実体は local-first desktop capsule です。
+- This is the standalone web evolution of the original
+  `byok-encrypted-r2-drop` Tauri sample: Google Drive is now the only
+  provider, there is no R2, and there is no desktop shell.
