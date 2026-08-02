@@ -112,6 +112,12 @@ docker run --rm -p 8080:8080 \
 # open http://localhost:8080
 ```
 
+The multi-stage build is verified: it builds the Rust server and React
+frontend, downloads rclone with a SHA-256 check against the official
+checksums, and the resulting image boots and serves the app. The release
+workflow (`release.yml`) pushes the image to `ghcr.io/koh0920/vault` and
+pins the `@sha256:...` digest into `capsule.toml`.
+
 ## Environment variables
 
 See `.env.example`. Notable keys:
