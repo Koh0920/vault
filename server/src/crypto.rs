@@ -14,6 +14,9 @@ pub const NONCE_LEN: usize = 24;
 /// Minimum ciphertext length for XChaCha20-Poly1305 (master key + 16B tag).
 pub const MIN_SEALED_LEN: usize = MASTER_KEY_LEN + 16;
 pub const ENVELOPE_VERSION: u32 = 2;
+/// Legacy envelope format (v1, no AAD binding). Read for compatibility and
+/// migrated to v2 on successful unlock.
+pub const ENVELOPE_VERSION_V1: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KeyEnvelope {
@@ -103,13 +106,14 @@ pub fn unwrap_master_key(
     recovery_key: &[u8],
     aad: &[u8],
 ) -> Result<[u8; MASTER_KEY_LEN]> {
-    // Strict structural validation before any decode/decrypt step.
-    if envelope.schema_version != ENVELOPE_VERSION {
-        return err(format!(
-            "unsupported envelope version {}",
-            envelope.schema_version
-        ));
-    }
+    // Accept the current schema (v2, AAD-bound) and legacy v1 (no AAD).
+    let use_aad = match envelope.schema_version {
+        ENVELOPE_VERSION => true,
+        ENVELOPE_VERSION_V1 => false,
+        other => {
+            return err(format!("unsupported envelope version {other}"));
+        }
+    };
     if envelope.algorithm != "xchacha20-poly1305" {
         return err(format!("unsupported algorithm {}", envelope.algorithm));
     }
@@ -144,6 +148,7 @@ pub fn unwrap_master_key(
 
     let cipher = XChaCha20Poly1305::new(&envelope_key.into());
     let mut buffer = sealed;
+    let aad = if use_aad { aad } else { b"" };
     cipher
         .decrypt_in_place(XNonce::from_slice(&nonce), aad, &mut buffer)
         .map_err(|_| {
@@ -233,6 +238,38 @@ mod tests {
         let mut envelope = wrap_master_key(&master, &recovery, b"vault-123").unwrap();
         envelope.schema_version = 999;
         assert!(unwrap_master_key(&envelope, &recovery, b"vault-123").is_err());
+    }
+
+    #[test]
+    fn v1_legacy_envelope_unlocks_without_aad() {
+        // Legacy cc0afa7 envelopes: schema v1, no AAD binding. Must still unlock
+        // so existing vaults can be migrated to v2.
+        let master = generate_master_key().unwrap();
+        let recovery = generate_recovery_key().unwrap();
+        let v2 = wrap_master_key(&master, &recovery, b"vault-123").unwrap();
+        let mut v1 = v2.clone();
+        v1.schema_version = 1;
+        // Simulate a v1 envelope sealed without AAD: re-encrypt manually.
+        let salt = base64::engine::general_purpose::STANDARD
+            .decode(&v2.salt)
+            .unwrap();
+        let hk = Hkdf::<Sha256>::new(Some(&salt[..]), &recovery);
+        let mut envelope_key = [0u8; 32];
+        hk.expand(b"master-key-envelope", &mut envelope_key)
+            .unwrap();
+        let cipher = XChaCha20Poly1305::new(&envelope_key.into());
+        let mut nonce = [0u8; NONCE_LEN];
+        OsRng.fill_bytes(&mut nonce);
+        let mut buf = master.to_vec();
+        cipher
+            .encrypt_in_place(XNonce::from_slice(&nonce), b"", &mut buf)
+            .unwrap();
+        v1.nonce = base64::engine::general_purpose::STANDARD.encode(nonce);
+        v1.encrypted_master_key = base64::engine::general_purpose::STANDARD.encode(buf);
+
+        // AAD is ignored for v1; must succeed and match.
+        let unwrapped = unwrap_master_key(&v1, &recovery, b"vault-123").unwrap();
+        assert_eq!(&master[..], &unwrapped[..]);
     }
 
     #[test]

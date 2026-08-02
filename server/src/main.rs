@@ -23,7 +23,7 @@ async fn main() {
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(60)).await;
-                state.sessions.gc(&state.cfg);
+                state.sessions.gc();
             }
         });
     }

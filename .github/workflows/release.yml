@@ -1,8 +1,8 @@
 name: Release
 
-# On a vX.Y.Z tag, build the OCI image, push it to ghcr.io, and pin the
-# immutable @sha256:... digest into capsule.toml so the capsule revision is
-# reproducible (no :latest drift).
+# On a vX.Y.Z tag, build the OCI image, push it to ghcr.io, pin the immutable
+# @sha256:... digest into capsule.toml, and re-point the release tag at that
+# digest-pinned commit so the tag itself is reproducible (no :latest drift).
 
 on:
   push:
@@ -21,6 +21,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       - name: Log in to ghcr.io
@@ -51,10 +53,14 @@ jobs:
           s = re.sub(r'image = "[^"]*"', f'image = "{image}@{digest}"', s, count=1)
           open(p, "w").write(s)
           EOF
-      - name: Commit pinned digest
+      - name: Commit pinned digest and move the release tag to it
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add capsule.toml
-          git commit -m "chore: pin capsule image digest ${{ steps.build.outputs.digest }}" || echo "no changes"
+          git commit -m "chore: pin capsule image digest ${{ steps.build.outputs.digest }}"
+          # Re-point the release tag at the digest-pinned commit so the tag
+          # itself references the pinned image, not the pre-build commit.
+          git tag -f "${{ github.ref_name }}"
+          git push origin --force --tags "${{ github.ref_name }}"
           git push origin HEAD:main

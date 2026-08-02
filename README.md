@@ -32,11 +32,15 @@ Browser (React) ── HTTP ──► Axum server (Rust) ── rclone ──►
 ## Key & recovery design
 
 - A **master key** is generated for the vault and wrapped into a **key
-  envelope** (HKDF-derived XChaCha20-Poly1305 AEAD key) stored on Drive.
+  envelope** (HKDF-derived XChaCha20-Poly1305 AEAD key) stored on Drive as
+  `Vault/key-envelope.v2.json`.
 - The envelope schema is strictly validated (version, algorithm, KDF, salt /
   nonce / ciphertext lengths) before decryption, and the vault id is bound
   into the AEAD as associated data so an envelope can't be replayed against a
   different vault.
+- Legacy `key-envelope.v1.json` (pre-AAD) envelopes are still readable on
+  unlock and are migrated to the current v2 format automatically, so existing
+  vaults keep working.
 - The **recovery key** is shown exactly once at vault creation and can be
   exchanged for the master key later. It is persisted to IndexedDB for this
   browser origin and can be downloaded as a recovery kit JSON for import on a

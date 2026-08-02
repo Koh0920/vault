@@ -32,25 +32,24 @@ fn require_token_and_key(
     Ok((token, key, session.id))
 }
 
-/// RAII guard that removes the temp file on drop, including error paths.
+/// RAII guard that removes the temp file on drop, including success and error
+/// paths. rclone `copyto` does not move the source, so even a successful copy
+/// must remove the temp file to avoid filling the disk.
 struct TempFile {
     path: PathBuf,
-    done: bool,
 }
 
 impl TempFile {
     fn create(dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(dir).map_err(VaultError::Io)?;
         let path = dir.join(format!("{}-upload.tmp", uuid::Uuid::new_v4().simple()));
-        Ok(TempFile { path, done: false })
+        Ok(TempFile { path })
     }
 }
 
 impl Drop for TempFile {
     fn drop(&mut self) {
-        if !self.done {
-            let _ = std::fs::remove_file(&self.path);
-        }
+        let _ = std::fs::remove_file(&self.path);
     }
 }
 
@@ -93,7 +92,7 @@ async fn upload_files(
 
         // Stream the field into a temp file, enforcing the per-file / total limits
         // and cleaning up on any error path via RAII.
-        let mut temp = TempFile::create(&temp_dir)?;
+        let temp = TempFile::create(&temp_dir)?;
         {
             let mut file = std::fs::File::create(&temp.path).map_err(VaultError::Io)?;
             let mut field_bytes: u64 = 0;
@@ -130,10 +129,7 @@ async fn upload_files(
         };
 
         match copy_result {
-            Ok(_) => {
-                temp.done = true;
-                uploaded.push(json!({ "name": target, "ok": true }))
-            }
+            Ok(_) => uploaded.push(json!({ "name": target, "ok": true })),
             Err(e) => uploaded.push(json!({ "name": target, "ok": false, "error": e.to_string() })),
         }
     }

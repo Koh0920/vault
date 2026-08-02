@@ -2,3 +2,4 @@ node_modules/
 .state/
 frontend/dist/
 .DS_Store
+server/vault-data/

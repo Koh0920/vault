@@ -37,6 +37,7 @@ impl Session {
 pub struct SessionStore {
     inner: Arc<Mutex<HashMap<String, Session>>>,
     max_count: usize,
+    state_dir: std::path::PathBuf,
 }
 
 fn mac_secret(cfg: &AppConfig) -> Hmac<Sha256> {
@@ -45,10 +46,10 @@ fn mac_secret(cfg: &AppConfig) -> Hmac<Sha256> {
 
 impl SessionStore {
     pub fn new(cfg: &AppConfig) -> Self {
-        let _ = cfg;
         SessionStore {
             inner: Arc::new(Mutex::new(HashMap::new())),
             max_count: cfg.session_max_count,
+            state_dir: cfg.state_dir.clone(),
         }
     }
 
@@ -80,7 +81,8 @@ impl SessionStore {
     }
 
     /// Insert or replace a full session, enforcing the max session count by
-    /// evicting the oldest active session when at capacity.
+    /// evicting the oldest active session when at capacity. The evicted
+    /// session's on-disk rclone config is removed too.
     pub fn put(&self, session: Session) {
         let mut map = self.inner.lock().unwrap();
         let active_count = map.values().filter(|s| !Self::is_expired(s)).count();
@@ -93,6 +95,7 @@ impl SessionStore {
             {
                 if let Some(mut evicted) = map.remove(&oldest) {
                     evicted.zeroize();
+                    crate::rclone::Rclone::remove_session_dir(&self.state_dir, &oldest);
                 }
             }
         }
@@ -136,7 +139,7 @@ impl SessionStore {
 
     /// Removes expired sessions (zeroizing key material) and their on-disk
     /// rclone config dirs. Active sessions are left untouched.
-    pub fn gc(&self, cfg: &AppConfig) {
+    pub fn gc(&self) {
         let mut map = self.inner.lock().unwrap();
         let now = SystemTime::now();
         let expired: Vec<String> = map
@@ -151,8 +154,7 @@ impl SessionStore {
         }
         drop(map);
         for id in expired {
-            let rclone = crate::rclone::Rclone::for_session(cfg, &id);
-            rclone.remove_all();
+            crate::rclone::Rclone::remove_session_dir(&self.state_dir, &id);
         }
     }
 
@@ -284,7 +286,7 @@ mod tests {
             .ensure_config()
             .unwrap();
 
-        store.gc(&cfg);
+        store.gc();
 
         assert_eq!(store.len(), 1);
         assert!(store.get("active").is_some());
@@ -292,6 +294,35 @@ mod tests {
             .config
             .exists());
         assert!(crate::rclone::Rclone::for_session(&cfg, "active")
+            .config
+            .exists());
+    }
+
+    #[test]
+    fn eviction_removes_config_dir() {
+        let cfg = cfg();
+        let mut store = SessionStore::new(&cfg);
+        store.max_count = 2;
+
+        for i in 0..3 {
+            crate::rclone::Rclone::for_session(&cfg, &format!("s{i}"))
+                .ensure_config()
+                .unwrap();
+            store.put(Session {
+                id: format!("s{i}"),
+                token: None,
+                master_key: None,
+                vault_id: None,
+                code_verifier: String::new(),
+                state: String::new(),
+                expires_at: SystemTime::now() + Duration::from_secs(60),
+                connected: false,
+            });
+        }
+
+        assert!(store.len() <= 2);
+        // The first session should have been evicted, including its config.
+        assert!(!crate::rclone::Rclone::for_session(&cfg, "s0")
             .config
             .exists());
     }

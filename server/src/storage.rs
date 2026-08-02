@@ -84,6 +84,18 @@ impl DriveStore {
         self.rclone.run(&["cat".to_string(), self.remote(&path)])
     }
 
+    /// Reads at most `limit` bytes of a remote file (`rclone cat --count`).
+    /// Used to bound preview downloads so a large file can't be pulled whole.
+    pub async fn get_limited(&self, path: &str, limit: u64) -> Result<Vec<u8>> {
+        let path = validate_relative_path(path)?;
+        self.rclone.run(&[
+            "cat".to_string(),
+            "--count".to_string(),
+            limit.to_string(),
+            self.remote(&path),
+        ])
+    }
+
     pub async fn get_json<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
         let bytes = self.get(path).await?;
         serde_json::from_slice(&bytes).map_err(VaultError::Serde)
@@ -148,9 +160,15 @@ impl DriveStore {
     }
 
     pub async fn exists(&self, path: &str) -> Result<bool> {
+        Ok(self.stat(path).await?.is_some())
+    }
+
+    /// Returns metadata (including size) for a single remote path without
+    /// downloading it, using `rclone lsjson --stat`.
+    pub async fn stat(&self, path: &str) -> Result<Option<ObjectEntry>> {
         let path = validate_relative_path(path)?;
         if path.is_empty() {
-            return Ok(true);
+            return Ok(None);
         }
         let out = self.rclone.run(&[
             "lsjson".to_string(),
@@ -158,8 +176,20 @@ impl DriveStore {
             self.remote(&path),
         ]);
         match out {
-            Ok(_) => Ok(true),
-            Err(_) => Ok(false),
+            Ok(bytes) => {
+                let items: Vec<RcloneLsJsonItem> = serde_json::from_slice(&bytes)
+                    .map_err(|e| VaultError::Meta(format!("parse lsjson stat: {e}")))?;
+                Ok(items.into_iter().next().map(|item| ObjectEntry {
+                    name: item.name.clone(),
+                    path: item.path.clone(),
+                    is_dir: item.is_dir,
+                    size: item.size,
+                    mod_time: item.mod_time.clone(),
+                    mime_type: item.mime_type.clone(),
+                    encrypted: item.encrypted.clone(),
+                }))
+            }
+            Err(_) => Ok(None),
         }
     }
 
@@ -167,6 +197,17 @@ impl DriveStore {
         let path = validate_relative_path(path)?;
         self.rclone
             .run(&["purge".to_string(), self.remote(&path)])
+            .map(|_| ())
+    }
+
+    /// Creates a remote directory (encrypted name when routed via crypt).
+    pub async fn mkdir(&self, path: &str) -> Result<()> {
+        let path = validate_relative_path(path)?;
+        if path.is_empty() {
+            return Ok(());
+        }
+        self.rclone
+            .run(&["mkdir".to_string(), self.remote(&path)])
             .map(|_| ())
     }
 

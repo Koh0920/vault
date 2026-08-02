@@ -7,28 +7,32 @@ default_target = "web"
 
 [targets.web]
 runtime = "oci"
-# Pinned to a release tag, not :latest, for reproducibility. CI (release.yml)
-# builds this image, pushes it, and rewrites this field to an immutable
-# @sha256:... digest before a release is tagged.
+# Pinned to a release tag, not :latest, for reproducibility. release.yml builds
+# this image, pushes it, and rewrites this field to an immutable @sha256:...
+# digest, then re-points the version tag to that commit before tagging.
 image = "ghcr.io/koh0920/vault:v0.1.0"
 port = 8080
+# Fail closed at launch: these must be injected as ordinary environment.
+# GOOGLE_REDIRECT_URI is required so OAuth callbacks land on the real Ato origin,
+# never a localhost default.
+required_env = [
+	"GOOGLE_CLIENT_ID",
+	"GOOGLE_CLIENT_SECRET",
+	"GOOGLE_REDIRECT_URI",
+	"VAULT_COOKIE_SECRET",
+]
 
 [network]
 expose = ["8080/tcp"]
 ingress = {}
-
-# Fail closed at launch: these must be injected as ordinary environment.
-required_env = [
-	"GOOGLE_CLIENT_ID",
-	"GOOGLE_CLIENT_SECRET",
-	"VAULT_COOKIE_SECRET",
-]
 
 [env]
 VAULT_LISTEN_ADDR = "0.0.0.0:8080"
 VAULT_FRONTEND_DIR = "/app/frontend/dist"
 VAULT_STATE_DIR = "/data"
 VAULT_TEMP_DIR = "/tmp"
+# Ato serves over HTTPS; mark session cookies Secure.
+VAULT_COOKIE_SECURE = "true"
 
 [metadata]
 display_name = "Vault"

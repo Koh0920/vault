@@ -80,21 +80,28 @@ async fn preview_file(
     let max_preview = state.cfg.max_preview_bytes;
     let cfg = state.cfg.clone();
     let path_for_task = path.clone();
-    let bytes = tokio::task::spawn_blocking(move || {
+
+    // Stat the remote first so a huge file is rejected before any bytes are
+    // transferred; then read at most max+1 bytes as a second guard.
+    let bytes = tokio::task::spawn_blocking(move || -> crate::error::Result<Option<Vec<u8>>> {
         vault::connect_crypt(&cfg, &key, &session_id)?;
         let store = DriveStore::new(crate::rclone::Rclone::for_session(&cfg, &session_id), true);
-        futures::executor::block_on(store.get(&path_for_task))
+        let stat = futures::executor::block_on(store.stat(&path_for_task))?;
+        if let Some(entry) = &stat {
+            if entry.size > max_preview as u64 {
+                return Err(VaultError::TooLarge(format!(
+                    "file is {} bytes; preview limited to {} bytes",
+                    entry.size, max_preview
+                )));
+            }
+        }
+        let bytes =
+            futures::executor::block_on(store.get_limited(&path_for_task, max_preview as u64 + 1))?;
+        Ok(Some(bytes))
     })
     .await
-    .map_err(|e| ApiError(VaultError::Message(format!("task join: {e}"))))??;
-
-    if bytes.len() > max_preview {
-        return Err(ApiError(VaultError::TooLarge(format!(
-            "file is {} bytes; preview limited to {} bytes",
-            bytes.len(),
-            max_preview
-        ))));
-    }
+    .map_err(|e| ApiError(VaultError::Message(format!("task join: {e}"))))??
+    .ok_or_else(|| ApiError(VaultError::NotFound(path.clone())))?;
 
     let text = String::from_utf8(bytes.clone()).ok();
     let mime = mime_guess(&params.path);

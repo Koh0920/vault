@@ -10,11 +10,12 @@ use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
 pub const FILE_MANIFEST: &str = "Vault/vault.v1.json";
-pub const FILE_ENVELOPE: &str = "Vault/key-envelope.v1.json";
+/// Current envelope filename (v2 schema, AAD-bound).
+pub const FILE_ENVELOPE: &str = "Vault/key-envelope.v2.json";
+/// Legacy envelope filename (v1 schema, no AAD binding). Read for compat.
+pub const FILE_ENVELOPE_V1: &str = "Vault/key-envelope.v1.json";
 /// Base path inside Drive that the crypt remote points at.
 pub const CIPHER_ROOT: &str = "Vault/cipher";
-pub const DIR_FILES: &str = "Vault/cipher/files";
-pub const DIR_VAULT_META: &str = "Vault/cipher/.vault";
 
 #[derive(Debug, Clone)]
 pub struct UnlockedVault {
@@ -134,14 +135,20 @@ pub async fn initialize_vault(
     plain.write_json(FILE_MANIFEST, &manifest).await?;
     plain.write_json(FILE_ENVELOPE, &envelope).await?;
 
-    // Ensure plain layout directories exist directly under the drive root.
+    // Create the plain root + cipher root directly on Drive; the cipher-internal
+    // dirs (files, .vault) are created through the crypt remote so their names
+    // are encrypted, never left as plaintext inside the cipher root.
     let rclone = session_rclone(cfg, session_id);
-    for dir in ["Vault", CIPHER_ROOT, DIR_FILES, DIR_VAULT_META] {
+    for dir in ["Vault", CIPHER_ROOT] {
         let _ = rclone.run(&["mkdir".to_string(), rclone::remote_spec(DRIVE_REMOTE, dir)]);
     }
 
     // Configure the session-local crypt remote so encrypted ops work immediately.
     connect_crypt(cfg, &master_key, session_id)?;
+    let crypt_store = DriveStore::new(session_rclone(cfg, session_id), true);
+    for dir in ["files", ".vault"] {
+        let _ = crypt_store.mkdir(dir).await;
+    }
 
     Ok(CreatedVault {
         resp: InitializeResponse {
@@ -155,7 +162,8 @@ pub async fn initialize_vault(
 
 /// Unlocks an existing vault for this session with a recovery key. Verifies the
 /// envelope and fingerprint, configures the session-local crypt remote, and
-/// returns the manifested vault with its master key.
+/// returns the manifested vault with its master key. Legacy v1 envelopes are
+/// read for compatibility and migrated to the current v2 format.
 pub async fn unlock_vault(
     cfg: &AppConfig,
     token: &OAuthToken,
@@ -168,14 +176,29 @@ pub async fn unlock_vault(
             "vault manifest not found on Drive; connect an existing vault first".into(),
         )
     })?;
-    let envelope: crypto::KeyEnvelope = plain.get_json(FILE_ENVELOPE).await?;
-
     let recovery = crypto::recovery_key_from_b64(recovery_key)?;
+
+    // Prefer the current v2 envelope; fall back to legacy v1.
+    let (envelope, used_v1) = match plain.get_json::<crypto::KeyEnvelope>(FILE_ENVELOPE).await {
+        Ok(env) => (env, false),
+        Err(_) => {
+            let env: crypto::KeyEnvelope = plain.get_json(FILE_ENVELOPE_V1).await?;
+            (env, true)
+        }
+    };
+
     let master_key = crypto::unwrap_master_key(&envelope, &recovery, manifest.vault_id.as_bytes())?;
 
     // Binding check: the envelope's fingerprint must match the manifest.
     if crypto::key_fingerprint(&master_key) != manifest.key_fingerprint {
         return err("key fingerprint mismatch: vault integrity check failed");
+    }
+
+    // Migrate a legacy v1 envelope to the current v2 format on successful unlock.
+    if used_v1 {
+        let envelope_v2 =
+            crypto::wrap_master_key(&master_key, &recovery, manifest.vault_id.as_bytes())?;
+        plain.write_json(FILE_ENVELOPE, &envelope_v2).await?;
     }
 
     connect_crypt(cfg, &master_key, session_id)?;

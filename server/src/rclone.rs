@@ -17,10 +17,13 @@ pub struct Rclone {
 
 impl Rclone {
     pub fn for_session(cfg: &AppConfig, session_id: &str) -> Self {
+        Rclone::for_session_path(&cfg.state_dir, &cfg.rclone_binary, session_id)
+    }
+
+    pub fn for_session_path(state_dir: &Path, binary: &Path, session_id: &str) -> Self {
         Rclone {
-            binary: cfg.rclone_binary.clone(),
-            config: cfg
-                .state_dir
+            binary: binary.to_path_buf(),
+            config: state_dir
                 .join("rclone")
                 .join(session_id)
                 .join("rclone.conf"),
@@ -31,12 +34,28 @@ impl Rclone {
         self.config.parent().unwrap_or(Path::new("."))
     }
 
+    /// Removes the on-disk config directory for a session given a state dir.
+    pub fn remove_session_dir(state_dir: &Path, session_id: &str) {
+        let dir = state_dir.join("rclone").join(session_id);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     pub fn ensure_config(&self) -> Result<PathBuf> {
         if let Some(parent) = self.config.parent() {
             std::fs::create_dir_all(parent).map_err(VaultError::Io)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+            }
         }
         if !self.config.exists() {
             std::fs::write(&self.config, b"").map_err(VaultError::Io)?;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&self.config, std::fs::Permissions::from_mode(0o600));
         }
         Ok(self.config.clone())
     }
@@ -183,4 +202,31 @@ pub fn crypt_spec(relative: &str) -> String {
 /// Unused helper retained for completeness; drive paths are resolved directly.
 pub fn drive_spec(path: &str) -> String {
     remote_spec(DRIVE_REMOTE, path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ensure_config_sets_restrictive_permissions() {
+        std::env::set_var(
+            "VAULT_COOKIE_SECRET",
+            "test-secret-that-is-long-enough-for-hmac-0123456789",
+        );
+        let cfg = crate::config::load();
+        let rclone = Rclone::for_session(&cfg, "perm-test");
+        rclone.ensure_config().unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let dir_mode = std::fs::metadata(rclone.config_dir()).unwrap().permissions().mode() & 0o777;
+            let file_mode = std::fs::metadata(&rclone.config).unwrap().permissions().mode() & 0o777;
+            assert_eq!(dir_mode, 0o700, "config dir must be 0700");
+            assert_eq!(file_mode, 0o600, "config file must be 0600");
+        }
+
+        rclone.remove_all();
+    }
 }

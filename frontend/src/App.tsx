@@ -146,12 +146,20 @@ function Locked({
   const [importFileName, setImportFileName] = useState<string | null>(null);
   const importInput = useRef<HTMLInputElement>(null);
 
-  // Offer any locally saved recovery kit for this origin.
+  // Offer a locally saved recovery kit that matches this vault (by vault id or
+  // key fingerprint) rather than unconditionally the first kit stored.
   useEffect(() => {
+    const vaultId = vault?.vaultId;
+    const fingerprint = vault?.keyFingerprint;
     loadRecoveryKits().then((kits) => {
-      if (kits.length > 0) setSavedKit(kits[0]);
+      if (kits.length === 0) return;
+      const match =
+        kits.find((k) => vaultId && k.vaultId === vaultId) ??
+        kits.find((k) => fingerprint && k.keyFingerprint === fingerprint) ??
+        null;
+      setSavedKit(match);
     });
-  }, []);
+  }, [vault?.vaultId, vault?.keyFingerprint]);
 
   async function create() {
     setLocalBusy(true);
@@ -259,7 +267,13 @@ function Locked({
             {localBusy ? "Unlocking…" : "Unlock"}
           </button>
           <div className="import-row">
-            <label className="link-like">Import recovery kit</label>
+            <button
+              type="button"
+              className="link-like"
+              onClick={() => importInput.current?.click()}
+            >
+              Import recovery kit
+            </button>
             <input
               ref={importInput}
               type="file"

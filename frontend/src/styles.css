@@ -134,12 +134,17 @@ body {
   margin: 0 8px;
 }
 .link-like {
+  background: none;
+  border: none;
+  padding: 0;
   color: var(--accent);
   cursor: pointer;
   text-decoration: underline;
   text-underline-offset: 3px;
   font-size: 13px;
+  font-family: var(--sans);
 }
+.link-like:hover { color: var(--text); }
 .import-row {
   display: flex;
   flex-direction: column;
